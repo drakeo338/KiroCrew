@@ -160,6 +160,7 @@ from kiro_crew.sandbox import (
     RLIMIT_PROFILE_SESSION_HOST,
     BoundWorkspaceMismatch,
     _forward_ssh_auth_sock,
+    _push_verdict_masks_ssh,
     agents_slice_throttling,
     assert_voice_runtime_outside_agent_workspace,
     bind_voice_safe_agent_workspace_async,
@@ -2692,6 +2693,12 @@ class AcpRuntime:
         # (config read) and pass it to both the sandbox wrap and the parent scrub
         # below, so neither reads config on the loop. Scoped to this agent spawn.
         forward_ssh_auth_sock = await asyncio.to_thread(_forward_ssh_auth_sock)
+        # Resolve the push-verdict activation mask off-loop too (activation
+        # keystone read) and thread it into the parent scrub below, so the
+        # on-loop enforcement point does no synchronous config read. Agent spawn,
+        # never gateway_publish, so the mask is the raw activation signal; under
+        # it the HTTPS token env is withheld from the Windows-delegated child.
+        push_verdict_activation = await asyncio.to_thread(_push_verdict_masks_ssh)
         argv, self._sandbox_cleanup = await wrap_argv_async(
             argv,
             mode=self._sandbox_mode,
@@ -2780,7 +2787,11 @@ class AcpRuntime:
         # CLI's internal sandbox without a POSIX `env -u` wrapper. Do it after
         # credential-pointer/API-key resolution so no resolver can reintroduce a
         # denied variable; KIRO_API_KEY itself is intentionally not denied.
-        env = scrub_agent_subprocess_env(env, forward_ssh_auth_sock=forward_ssh_auth_sock)
+        env = scrub_agent_subprocess_env(
+            env,
+            forward_ssh_auth_sock=forward_ssh_auth_sock,
+            push_verdict_activation=push_verdict_activation,
+        )
         # Bundled skill scripts must not depend on a system ``python`` name.
         # The desktop bundles carry their interpreter outside the user's PATH,
         # while this path is already running under the exact environment that

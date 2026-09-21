@@ -78,6 +78,57 @@ def test_shared_constant_never_mutated():
     assert "SSH_AUTH_SOCK" in sb._SENSITIVE_ENV_PREFIXES
 
 
+# --- Site 0: sandboxed_spawn_argv returned env (the gateway publish path) ---
+
+
+def test_sandboxed_spawn_argv_gateway_publish_retains_socket():
+    """FIX2: the gateway-owned publish keeps SSH_AUTH_SOCK in the RETURNED env.
+
+    The gateway git spawn (``dashboard/handlers/push_verdict.py``) routes through
+    ``sandboxed_spawn_argv`` with ``gateway_publish=True``. ``wrap_argv`` keeps ``~/.ssh``
+    visible on the filesystem for it, but the returned env is built by ``scrub_env``, which
+    drops ``SSH_AUTH_SOCK`` unconditionally -- so a gateway publish that authenticates through
+    an SSH AGENT (no on-disk key) would find no socket and FAIL. The gateway publish restores
+    the exact socket key.
+
+    Mutation check: before the fix the returned env has no ``SSH_AUTH_SOCK`` even for a gateway
+    publish, so the positive assertion below fails.
+    """
+    src = {
+        "PATH": "/usr/bin",
+        "HOME": "/opt/x-home",
+        "SSH_AUTH_SOCK": "/tmp/agent.sock",
+        "AWS_SECRET_ACCESS_KEY": "sk",
+    }
+    _wrapped, scrubbed, _cleanup = sb.sandboxed_spawn_argv(
+        ["git", "push"], mode="standard", env=src, gateway_publish=True
+    )
+    # Positive: the gateway publish keeps the agent socket with its exact value.
+    assert scrubbed.get("SSH_AUTH_SOCK") == "/tmp/agent.sock"
+    # Control (same call): a genuine credential is STILL removed, so the exemption is scoped to
+    # the socket and did not disable the scrub.
+    assert "AWS_SECRET_ACCESS_KEY" not in scrubbed
+
+
+def test_sandboxed_spawn_argv_agent_spawn_still_scrubs_socket():
+    """The exemption is gateway-only: an ordinary agent-influenced spawn
+    (``gateway_publish=False``, the default) keeps the socket SCRUBBED, so an opaque agent
+    child cannot reach the operator's ssh-agent to push past the argv floor."""
+    src = {
+        "PATH": "/usr/bin",
+        "HOME": "/opt/x-home",
+        "SSH_AUTH_SOCK": "/tmp/agent.sock",
+        "AWS_SECRET_ACCESS_KEY": "sk",
+    }
+    _wrapped, scrubbed, _cleanup = sb.sandboxed_spawn_argv(
+        ["some", "agent-cmd"], mode="standard", env=src
+    )
+    # Negative: the default (agent) spawn drops the socket, exactly as before.
+    assert "SSH_AUTH_SOCK" not in scrubbed
+    # Control: a benign key survives, proving the scrub ran rather than returning empty.
+    assert scrubbed.get("PATH") == "/usr/bin"
+
+
 # --- Site 3: parent-side scrub_agent_subprocess_env (ACP agent enforcement) ---
 
 

@@ -254,6 +254,7 @@ from kiro_crew.sandbox import (
     SANDBOX_LAYER_HARNESS,
     BoundWorkspaceMismatch,
     _forward_ssh_auth_sock,
+    _push_verdict_masks_ssh,
     agent_env_scrub_prefixes,
     apply_windows_resource_ceiling,
     assert_voice_runtime_outside_agent_workspace,
@@ -10074,6 +10075,15 @@ class AcpClient:
         # (anchor: no-blocking-call-on-event-loop). Scoped to this agent spawn:
         # generic launchers default the flag off and keep scrubbing the socket.
         forward_ssh_auth_sock = await asyncio.to_thread(_forward_ssh_auth_sock)
+        # Resolve the push-verdict activation mask off the event loop too (it
+        # reads the activation keystone through config.paths, a stat/read), then
+        # thread the resolved boolean into the parent-side scrub below so no
+        # synchronous config read runs on the loop -- exactly as
+        # forward_ssh_auth_sock is threaded. This is an agent spawn, never the
+        # gateway-owned publish, so the mask is the raw activation signal
+        # (gateway_publish is not in play here); under it the HTTPS token env is
+        # withheld from the delegated/parent-scrubbed child on Windows too.
+        push_verdict_activation = await asyncio.to_thread(_push_verdict_masks_ssh)
         argv, self._sandbox_cleanup = await wrap_argv_async(
             argv,
             mode=self._sandbox_mode,
@@ -10236,7 +10246,11 @@ class AcpClient:
         # cannot reintroduce a denied pointer; KIRO_API_KEY remains available only
         # to the positively identified Kiro backend. forward_ssh_auth_sock is
         # the opt-in resolved off-loop above and reused here.
-        env = scrub_agent_subprocess_env(env, forward_ssh_auth_sock=forward_ssh_auth_sock)
+        env = scrub_agent_subprocess_env(
+            env,
+            forward_ssh_auth_sock=forward_ssh_auth_sock,
+            push_verdict_activation=push_verdict_activation,
+        )
         # Bundled skill scripts must not depend on a system ``python`` name.
         # The desktop bundles carry their interpreter outside the user's PATH,
         # while this path is already running under the exact environment that
