@@ -50,6 +50,8 @@ from kiro_crew.dashboard.session_transfer import (
     TranscriptWithheld,
     build_transfer_bundle_async,
     local_instance_label,
+    release_bundle_files,
+    write_bundle_file,
 )
 from kiro_crew.dashboard.state import MAX_LIVE_SLOTS
 from kiro_crew.history import SEARCH_MIN_CHARS
@@ -1476,7 +1478,14 @@ async def api_instances_send_session(request: web.Request) -> web.Response:
         # released immediately after this off-loop revalidation. The remaining
         # race window is the transmit itself; holding across the await would
         # stall the event loop behind a cross-process transcript lock.
-        await asyncio.to_thread(_revalidate_for_publication)
+        #
+        # A refusal here returns before the send, whose ``finally`` is the other
+        # place the bundle's Layer B snapshot is removed, so it is removed here.
+        try:
+            await asyncio.to_thread(_revalidate_for_publication)
+        except BaseException:
+            release_bundle_files(bundle)
+            raise
     except TranscriptBusy:
         # The seam could not take the transcript lock in time; nothing was sent
         # and the source is untouched, so this is the retryable answer.
@@ -1515,7 +1524,15 @@ async def api_instances_send_session(request: web.Request) -> web.Response:
             },
             status=503,
         )
-    ok, payload = await mgr.send_session_bundle(instance_id, bundle)
+    try:
+        ok, payload = await mgr.send_session_bundle(
+            instance_id,
+            bundle,
+            # Plain JSON, which every importer release reads, streamed from disk.
+            serialise=lambda b: write_bundle_file(b, compress=False),
+        )
+    finally:
+        release_bundle_files(bundle)
     if not ok:
         _audit(
             "send_session",
