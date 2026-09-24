@@ -81,13 +81,13 @@ from .inline_payload import (
     _decoded_b64_literal_sources,
     _has_self_importing_inline_program,
 )
+from .shell_assignment_syntax import _REDIRECT_START_RE
 from .shell_normalizer import (
     _AMBIGUOUS_EXPANSION_RE,
     _PROCESS_SUBSTITUTION_OPENERS,
     _PYTHON_INLINE_PROGRAM_FLAGS,
     _PYTHON_OPERAND_FLAGS,
     _PYTHON_PROGRAM_RE,
-    _REDIRECT_START_RE,
     _SHELL_WRAPPER_CHARS,
     _argv_programs,
     _backtick_closer,
@@ -434,6 +434,12 @@ def _is_credential_mint(text_lower: str, *, raw_text: "str | None" = None) -> bo
     submitted = raw_text if raw_text is not None else text_lower
     decoded_literals = _decoded_b64_literal_sources(submitted)
     for tokens in _self_token_frames(text_lower):
+        # A frame the reader could not afford to enumerate carries the fail-closed
+        # reading: each consuming floor refuses on it for itself, so an operator who
+        # disabled one row is still covered by the rows that remain (found in review:
+        # the reading was the mint spelling, which only the mint floor read).
+        if _shell_normalizer._is_unreadable_reading(tokens):
+            return True
         programs = _argv_programs(tokens)
         # The command-level half of ``_data_consumer_exempt`` reads only *tokens*, so its
         # answer is the same for every token in this frame.  Held here and computed at
@@ -853,6 +859,8 @@ def _is_self_kill(text_lower: str) -> bool:
     if not _self_floor_can_fire(text_lower):
         return False
     for tokens in _self_token_frames(text_lower):
+        if _shell_normalizer._is_unreadable_reading(tokens):
+            return True
         programs = _argv_programs(tokens)
         # Once per FRAME, not once per trigger token: see ``_is_credential_mint``.
         disqualified: "bool | None" = None
@@ -1140,6 +1148,8 @@ def _matches_self_subcommand(text_lower: str, spec: "tuple[object, ...]") -> boo
     if not _self_floor_can_fire(text_lower):
         return False
     for tokens in _self_token_frames(_shell_join_continuations(text_lower)):
+        if _shell_normalizer._is_unreadable_reading(tokens):
+            return True
         programs = _argv_programs(tokens)
         # Once per FRAME, not once per token, to keep the floor linear in token count.
         scan = _self_module_flag_scan(tokens)
@@ -1222,6 +1232,8 @@ def _is_dev_mode_out_of_root_confirm(text_lower: str) -> bool:
     if "confirm" not in stripped and "install" not in stripped and "\\" not in text_lower:
         return False
     for tokens in _self_token_frames(text_lower):
+        if _shell_normalizer._is_unreadable_reading(tokens):
+            return True
         for token in tokens:
             if _DEV_MODE_CONFIRM_FLAG in _SELF_FLOOR_QUOTE_JUNK_RE.sub(
                 "", _shell_normalizer._normalize_operand(token)
@@ -2748,6 +2760,8 @@ def _is_ssh_to_self(text_lower: str) -> bool:
     # copy staged in an EARLIER command line is the documented residual.
     bound_program_verbs: "dict[str, str]" = {}
     for tokens in _self_token_frames(text_lower):
+        if _shell_normalizer._is_unreadable_reading(tokens):
+            return True
         programs = _argv_programs(tokens)
         # A leading ``RSYNC_RSH=<cmd>`` environment assignment selects rsync's
         # remote shell exactly like ``-e``/``--rsh``, but rides BEFORE the verb
