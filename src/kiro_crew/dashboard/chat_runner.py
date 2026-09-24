@@ -2911,15 +2911,24 @@ def _turn_line_changes(changes: Any) -> int:
     return line_changes_from_file_changes(resolved)
 
 
-def _flush_file_changes(slot: "_ChatSlot") -> None:
-    """Attach accumulated file changes to the last assistant message.
+def _build_file_change_snapshot(
+    slot: "_ChatSlot",
+) -> "tuple[dict[str, Any], int] | None":
+    """Read, scrub and bound the turn's file changes without touching the slot.
 
     Dedups by path (first before, last after), reads the AFTER content from
-    disk, and writes the list to message meta as ``file_changes``. Files the
-    turn budget dropped are counted in ``file_changes_omitted_files``, a plain
-    int present only when it is non-zero. Called on
-    every exit path (success / cancel / error) so users always see what was
-    modified, even on aborted turns.
+    disk, redacts it, then spends the turn budget on it with
+    :func:`_apply_turn_snapshot_budget`. Returns the message meta the attach
+    writes -- ``file_changes``, plus ``file_changes_omitted_files`` when the
+    budget dropped any -- paired with the path-only count, which is logged but
+    never persisted. ``None`` means the turn recorded no writes at all.
+
+    Safe on a worker thread precisely because it RETURNS that meta rather than
+    attaching it: the attach reaches ``slot.append`` and the slot's own
+    attributes, and those belong to the loop. Nothing here writes slot state --
+    the budget is pure on its ``entries`` -- so the only work left on the loop
+    is the attach. Same split, and the same reason, as the prompt-chip helper
+    further down this module.
     """
     # Defensive: only proceed when a real, non-empty list is present. Tests
     # using MagicMock slots leave _file_changes as a MagicMock attribute
@@ -2928,7 +2937,7 @@ def _flush_file_changes(slot: "_ChatSlot") -> None:
     # writes actually happened.
     fc_changes = getattr(slot, "_file_changes", None)
     if not isinstance(fc_changes, list) or not fc_changes:
-        return
+        return None
     # Dedup: keep first before for each path (truest "before") since a file
     # may be modified multiple times in one turn.
     deduped: dict[str, dict[str, Any]] = {}
@@ -3001,6 +3010,54 @@ def _flush_file_changes(slot: "_ChatSlot") -> None:
     file_meta: dict[str, Any] = {"file_changes": fc_list}
     if _dropped:
         file_meta["file_changes_omitted_files"] = _dropped
+    return file_meta, _demoted
+
+
+def _build_file_change_snapshot_into(
+    slot: "_ChatSlot", holder: "list[tuple[dict[str, Any], int] | None]"
+) -> None:
+    """Build the snapshot and stash it in *holder*, for a drained off-loop call.
+
+    :func:`drained_to_thread` runs its worker to completion but, on a cancel it
+    deferred, RE-RAISES the ``CancelledError`` rather than returning the worker's
+    value -- so a caller that reads the return and only then flushes would drop
+    the built snapshot on exactly that cancel. Writing into a caller-owned holder
+    instead lets the loop-side flush recover the result from the holder in its
+    own ``finally``, whether the await returned or re-raised. Single-slot: the
+    worker runs once per call, so at most one entry is appended, and its presence
+    is what tells the flush a snapshot was built.
+    """
+    holder.append(_build_file_change_snapshot(slot))
+
+
+def _flush_file_changes(
+    slot: "_ChatSlot",
+    prepared: "tuple[dict[str, Any], int] | None" = None,
+) -> None:
+    """Attach the turn's file changes to the last assistant message.
+
+    MUST run on the event loop's own thread. Every sink below is loop-owned:
+    ``slot.append`` ends in ``slot.event.set()``, and the meta write plus
+    ``_dirty`` are what the loop-driven periodic flush reads. A coroutine
+    therefore builds the meta with :func:`_build_file_change_snapshot` on a
+    worker and calls this after its own await, handing the result in as
+    ``prepared``. A synchronous caller already on the loop may omit it and let
+    this read the changes itself.
+
+    The dropped count is recovered from the meta rather than carried beside it:
+    the builder writes ``file_changes_omitted_files`` only when that count is
+    non-zero, so the key's presence and a non-zero count are one fact. The
+    path-only count cannot be recovered that way -- it is logged and never
+    persisted, so nothing in the meta records it -- which is why the builder
+    hands it back separately.
+    """
+    if prepared is None:
+        prepared = _build_file_change_snapshot(slot)
+    if prepared is None:
+        return
+    file_meta, _demoted = prepared
+    fc_list = file_meta["file_changes"]
+    _dropped = file_meta.get("file_changes_omitted_files", 0)
     # Attach to the most recent assistant message; if none exists (turn
     # aborted before any text), create a synthetic message so the chips
     # still surface.
@@ -18351,8 +18408,27 @@ async def _run_chat(
                 turn_boundary=_turn_msg_boundary,
                 model=_turn_model,
             )
-            # Attach accumulated file changes to last assistant message before persist
-            _flush_file_changes(slot)
+            # Attach accumulated file changes to last assistant message before
+            # persist. Off the loop: each changed path is read through
+            # `_safe_read_snapshot`, whose validation opens every component of
+            # the path on Windows, so a slow or mapped drive would stall the
+            # loop for the whole turn's file set. Through `drained_to_thread`
+            # rather than a plain `to_thread` because the worker MUTATES slot
+            # state -- the message meta, `_dirty`, `_file_changes` -- and a
+            # cancellation at a plain await returns control while it is still
+            # writing. The turn-exit flush below would then start a second
+            # flush on the same slot with the first in flight, and two
+            # concurrent writers are how that metadata goes missing or lands on
+            # the wrong message. Draining means control returns with no write
+            # outstanding. The worker only READS and scrubs; the attach happens
+            # on this thread, because `slot.append` and the slot's own
+            # attributes are the loop's to write.
+            _fc_holder: "list[tuple[dict[str, Any], int] | None]" = []
+            try:
+                await drained_to_thread(_build_file_change_snapshot_into, slot, _fc_holder)
+            finally:
+                if _fc_holder:
+                    _flush_file_changes(slot, _fc_holder[0])
             # The reply is in the window, so this save is the durable clear of
             # the in-flight marker: retire it first and the omission rides the
             # same write instead of costing a second one in the finally. Not
@@ -20355,12 +20431,31 @@ async def _run_chat(
             setattr(client, "child_fidelity_aware", False)
         except Exception:
             pass
-        # Ensure file changes always surface, even on cancel/error. Wrapped so
-        # a raise here cannot skip the re-arm below and re-introduce the orphan
-        # bug this fix prevents.
+        # Ensure file changes always surface, even on cancel/error. The
+        # per-path snapshot reads open every component of the path on Windows,
+        # so they run off the loop -- through `drained_to_thread`, which keeps
+        # the await alive until the worker finishes. `drained_to_thread` DEFERS
+        # a cancel: it lets the worker finish and then RE-RAISES the
+        # CancelledError instead of returning the built snapshot, so binding the
+        # result to a name after the await and flushing below it would skip the
+        # flush on exactly that cancel -- silently losing the turn's only
+        # before-images. This exit path runs inside the turn's `finally`, where
+        # a cancel (the turn ceiling, a slot close, ephemeral-client cleanup) is
+        # ordinary, so the worker stashes its result into `_fc_exit_holder` and
+        # the loop-side flush runs in the inner `finally` from that holder
+        # whether the await returned or re-raised. The deferred cancel (and any
+        # worker exception) still propagates AFTER the flush has run, so neither
+        # can skip the re-arm below and re-introduce the orphan bug this fix
+        # prevents; a cancellation already propagating through this outer
+        # `finally` resumes once the block ends.
+        _fc_exit_holder: "list[tuple[dict[str, Any], int] | None]" = []
         try:
-            _flush_file_changes(slot)
-        except Exception:
+            try:
+                await drained_to_thread(_build_file_change_snapshot_into, slot, _fc_exit_holder)
+            finally:
+                if _fc_exit_holder:
+                    _flush_file_changes(slot, _fc_exit_holder[0])
+        except (Exception, asyncio.CancelledError):
             logger.debug("_flush_file_changes failed", exc_info=True)
         # Replay settlement belongs on the one path every turn exit crosses.
         # A clean, non-synthetic landed end_turn is the only ordinary terminal
