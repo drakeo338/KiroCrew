@@ -314,7 +314,16 @@ class TestLeafOnlyPopulationIsRecorded:
     #: launch fingerprints; ``mcp/resolved`` holds executables substituted for an
     #: approved launch. Each sits beside writable siblings, so no parent stand-in
     #: can hold it.
-    EXPECTED: dict[str, int] = {"standard": 253, "cc": 260, "strict": 261}
+    #:
+    #: One more landed at the data-home root, three entries per tier:
+    #:
+    #: * ``app_backends.pids.json`` -- the app-backend spawn record (pid, start
+    #:   instant and per-spawn instance token per launched app). The adoption
+    #:   path admits a port-holding listener only when this record attributes it,
+    #:   so a same-UID write of an inherited token into it would author the very
+    #:   provenance the gateway trusts. It sits at the data-home root beside
+    #:   writable siblings, so leaf-only is the only hold available.
+    EXPECTED: dict[str, int] = {"standard": 256, "cc": 263, "strict": 264}
 
     @pytest.mark.parametrize("tier", TIERS)
     def test_leaf_only_count_has_not_grown(self, tier: str) -> None:

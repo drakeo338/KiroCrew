@@ -575,6 +575,18 @@ _CREW_SECRET_LEAVES: list[str] = [
     # that route. The gateway's own startup reader opens it directly rather than
     # through this gate, so both keep working.
     "live_target.json",
+    # The app-backend spawn record: pid, start instant and the per-spawn
+    # instance token for each app whose backend the gateway launched. The
+    # adoption path admits a listener already answering an app's declared port
+    # only when this record attributes it, so a process that could write its own
+    # inherited token into this file would author the very provenance the gateway
+    # trusts to admit it. The sandbox bind-mask (``sandbox._CREW_HIDDEN_LEAVES``)
+    # hides it from a namespaced child, but a file tool runs where no such mount
+    # view exists, so the same authoring must be refused at this floor too. The
+    # gateway's own readers/writers open it directly rather than through this
+    # gate. Read protection matters as well: the token it holds is what an
+    # adopter would need to forge, so agent reads are refused, not just writes.
+    "app_backends.pids.json",
     # Holds `backup/redaction.json`, the switch that decides whether a bundle
     # leaving this machine is redacted first. An agent that could write it would
     # turn redaction off and every later upload would carry the operator's
