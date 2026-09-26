@@ -9278,6 +9278,37 @@
       "over_tokens": "Il prompt supera di ~{{over}} il limite di {{limit}} token di questo modello. Accorcialo prima di inviarlo.",
       "sr_near": "Il prompt è vicino al suo limite di lunghezza.",
       "sr_over": "Il prompt supera il suo limite di lunghezza."
+    },
+    "crewLayout": {
+      "element": {
+        "chat": "Chat",
+        "sidePanel": "Pannello laterale",
+        "files": "File",
+        "git": "Git",
+        "changes": "Modifiche",
+        "subagents": "Sottoagenti",
+        "terminal": "Terminale",
+        "notes": "Note",
+        "workLog": "Registro di lavoro",
+        "group": "Gruppo",
+        "tabs": "Schede"
+      },
+      "paletteContent": "Contenuto",
+      "hint": "Trascina una tessera sulla griglia · trascina un riquadro per spostarlo, o fuori per rimuoverlo",
+      "previewCue": "Anteprima",
+      "remove": "Rimuovi",
+      "removeElement": "Rimuovi {{label}}",
+      "moveElement": "Sposta {{label}}",
+      "dragHandle": "Trascinabile, usa i tasti freccia per spostare",
+      "replaceElement": "Sostituisci {{label}}",
+      "doesNotFit": "Non entra",
+      "dragTile": "Trascina {{label}} sulla griglia",
+      "cols": "colonne",
+      "rows": "righe",
+      "fewerCols": "meno colonne",
+      "moreCols": "più colonne",
+      "fewerRows": "meno righe",
+      "moreRows": "più righe"
     }
   },
   "hooks": {
@@ -17053,6 +17084,10 @@
       "age_for": "da {{age}}",
       "age_tip": "Tempo nello stato indicato dal badge.",
       "open_chat": "Apri la chat"
+    },
+    "layoutEditorHarness": {
+      "title": "Banco di prova dell’editor di layout",
+      "reset": "Reimposta layout"
     }
   },
   "privacyDisclosure": {
