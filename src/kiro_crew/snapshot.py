@@ -103,6 +103,7 @@ from kiro_crew.snapshot_components import (  # noqa: F401 - facade re-exports
     _WHOLE_TREE_COMPONENTS,
     COMPONENT_HELP,
     COMPONENT_JSON_OBJECTS,
+    COMPONENT_JSON_VALIDATORS,
     COMPONENT_TREES,
     COMPONENTS,
     CORE_FILES,
@@ -120,6 +121,7 @@ from kiro_crew.snapshot_components import (  # noqa: F401 - facade re-exports
     _is_host_local,
     _mc_dir,
     _never_ships,
+    _slack_workspace_record_defect,
     _tree_roots_replace_clears,
     _want,
     is_product_tree_database,
@@ -155,6 +157,7 @@ from kiro_crew.snapshot_restore import (  # noqa: F401 - facade re-exports
     _allocate_rollback_dir,
     _backup_and_copy,
     _backup_tree_or_refuse,
+    _bundle_record_names_workspace,
     _clear_store_directories,
     _component_payload_absent,
     _components_absent_from_bundle,
@@ -164,6 +167,7 @@ from kiro_crew.snapshot_restore import (  # noqa: F401 - facade re-exports
     _install_locked_document,
     _lock_down_restored,
     _refuse_corrupt_source_databases,
+    _refuse_legacy_slack_links_without_record,
     _refuse_unless_json_object,
     _refuse_unless_sound,
     _refuse_unless_valid_tree_document,
@@ -1866,6 +1870,7 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
                 snap,
                 components,
                 mc_for_merge=None if mode == "replace" else mc,
+                live_home=mc,
             )
         except SourceComponentUnsound as e:
             _audit(

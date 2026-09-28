@@ -11291,6 +11291,14 @@ async def _run_chat(
     _mirror_active_task = ""
     _mirror_active_task_title = ""
     _mirror_thread: str | None = ""
+    # The Slack client every mirror send of THIS turn goes through, captured in
+    # the same read as the destination below. ``state.slack_client`` is the
+    # LIVE mirror and a Reconnect replaces it mid-turn -- after a workspace
+    # switch, with a client for a workspace the captured destination does not
+    # belong to. Destination and client are read together and travel together.
+    _mirror_client: Any = None
+    _slack_approval_client: Any = None
+    _slack_approval_channel = ""
     _mirror_task_counter = 0
     _memory_preparation_admitted = False
     # Zero until the marker below is written, so a cancellation that lands during
@@ -12905,17 +12913,18 @@ async def _run_chat(
         # is the user saying "not into this conversation", which applies to the
         # answer as much as to the echo — so it is one gate, not four.
         if state.slack_client and not is_slash and not slack_mirror_is_paused(state, session_key):
+            _mirror_client = state.slack_client
             _mirror_thread, _mirror_chan = state.sessions.get_slack_link(session_key)
             if _mirror_thread and _mirror_chan:
                 try:
                     if not _is_synthetic:
                         _mirror_msg = _prepare_mirror_msg(_user_msg_for_mirror)
-                        await state.slack_client.post_message(
+                        await _mirror_client.post_message(
                             _mirror_chan, f"💬 _{_mirror_msg}_", _mirror_thread
                         )
                     # Start a stream for real-time tool animations
                     _mirror_stream_ts = (
-                        await state.slack_client.start_stream(
+                        await _mirror_client.start_stream(
                             _mirror_chan, _mirror_thread, initial_text="Thinking…"
                         )
                         or ""
@@ -13715,7 +13724,7 @@ async def _run_chat(
                 if _mirror_stream_ts and not cross_surface_withheld(state, slot):
                     try:
                         if _mirror_active_task:
-                            await state.slack_client.append_task(
+                            await _mirror_client.append_task(
                                 _mirror_chan,
                                 _mirror_stream_ts,
                                 _mirror_active_task,
@@ -13729,7 +13738,7 @@ async def _run_chat(
                         _task_title, _ = redact_credentials(_task_title)
                         _task_title = _task_title[:75]
                         _mirror_active_task_title = _task_title
-                        await state.slack_client.append_task(
+                        await _mirror_client.append_task(
                             _mirror_chan,
                             _mirror_stream_ts,
                             _mirror_active_task,
@@ -15642,9 +15651,15 @@ async def _run_chat(
                     and not slack_mirror_is_paused(state, session_key)
                 ):
                     try:
+                        # Client AND channel captured together: a workspace
+                        # switch mid-turn clears the slot's link fields
+                        # (``forget_slack_links``), and the cleanup below must
+                        # still name the channel the prompt was posted in.
+                        _slack_approval_client = state.slack_client
+                        _slack_approval_channel = slot._slack_channel
                         _slack_approval_ts = await post_linked_approval(
-                            state.slack_client,
-                            slot._slack_channel,
+                            _slack_approval_client,
+                            _slack_approval_channel,
                             slot._slack_thread_ts,
                             event.request_id,
                             session_key,
@@ -15968,10 +15983,10 @@ async def _run_chat(
                     # delete the buttons message now the decision is in.
                     if _slack_approval_ts is not None:
                         try:
-                            resolve_linked_approval(slot._slack_channel, _slack_approval_ts)
-                            if state.slack_client:
-                                await state.slack_client.delete_message(
-                                    slot._slack_channel, _slack_approval_ts
+                            resolve_linked_approval(_slack_approval_channel, _slack_approval_ts)
+                            if _slack_approval_client:
+                                await _slack_approval_client.delete_message(
+                                    _slack_approval_channel, _slack_approval_ts
                                 )
                         except Exception:
                             logger.debug(
@@ -18730,7 +18745,7 @@ async def _run_chat(
         # busier surface open.
         if (
             assistant_text
-            and state.slack_client
+            and _mirror_client
             and _mirror_thread
             and _mirror_chan
             and not cross_surface_withheld(state, slot)
@@ -18750,7 +18765,7 @@ async def _run_chat(
                 _mirror_body, _mirror_options = extract_options(assistant_text)
 
                 for _part in render_for_slack(_mirror_body):
-                    await state.slack_client.post_message(_mirror_chan, _part, _mirror_thread)
+                    await _mirror_client.post_message(_mirror_chan, _part, _mirror_thread)
                 if _mirror_options:
                     # Keep the ts this posts: the control has to be spendable
                     # later, and discarding the ts is what leaves a superseded
@@ -18776,7 +18791,7 @@ async def _run_chat(
                         if getattr(state, "sessions", None)
                         else session_key
                     )
-                    _mirror_ts = await state.slack_client.post_blocks(
+                    _mirror_ts = await _mirror_client.post_blocks(
                         _mirror_chan,
                         _mirror_blocks,
                         "Options",
@@ -20462,14 +20477,14 @@ async def _run_chat(
         # clears it. The nested try/finally makes the release unconditional
         # while preserving the reset-then-release ordering.
         try:
-            if _mirror_stream_ts and state.slack_client and _mirror_chan:
+            if _mirror_stream_ts and _mirror_client and _mirror_chan:
                 try:
                     # Fenced for the same reason the in-progress append is: if that
                     # one was withheld, marking it complete here would publish the
                     # title for the first time. This runs BEFORE the fence is
                     # cleared below, so it still sees the turn's own records.
                     if _mirror_active_task and not cross_surface_withheld(state, slot):
-                        await state.slack_client.append_task(
+                        await _mirror_client.append_task(
                             _mirror_chan,
                             _mirror_stream_ts,
                             _mirror_active_task,
@@ -20479,7 +20494,7 @@ async def _run_chat(
                 except Exception:
                     logger.debug("Task append cleanup failed", exc_info=True)
                 try:
-                    await state.slack_client.stop_stream(_mirror_chan, _mirror_stream_ts)
+                    await _mirror_client.stop_stream(_mirror_chan, _mirror_stream_ts)
                 except Exception:
                     logger.debug("Stream cleanup failed", exc_info=True)
             if _acquired and (needs_session_reset or needs_conversation_discard):

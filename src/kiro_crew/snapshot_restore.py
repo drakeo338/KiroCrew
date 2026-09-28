@@ -35,6 +35,11 @@ from kiro_crew.memory_stores import (
     is_host_local_store_state,
     memory_store_namespace_lock,
 )
+from kiro_crew.slack.workspace_record import (
+    SLACK_WORKSPACE_STATE_FILENAME,
+    session_map_slack_link_count,
+    slack_workspace_record_defect,
+)
 from kiro_crew.snapshot_archive import (
     _bundle_carries_named_stores,
     _safe_name,
@@ -47,6 +52,7 @@ from kiro_crew.snapshot_components import (
     _TREE_DOCUMENT_VALIDATORS,
     _WHOLE_TREE_COMPONENTS,
     COMPONENT_JSON_OBJECTS,
+    COMPONENT_JSON_VALIDATORS,
     COMPONENT_TREES,
     COMPONENTS,
     CORE_FILES,
@@ -544,8 +550,16 @@ def _refuse_corrupt_source_databases(
     components: list[str] | None,
     *,
     mc_for_merge: Path | None,
+    live_home: Path | None = None,
 ) -> None:
     """Refuse a bundle whose incoming components are unsound, BEFORE any live state moves.
+
+    *live_home* is the data home the restore writes into, in EITHER mode; it is what the
+    one cross-file check below reads (the live Slack workspace record, which a bundle
+    that predates the record leaves in place). *mc_for_merge* names the same directory
+    on merge and is ``None`` on replace, so it cannot stand in for it. Left ``None`` --
+    the older call shape -- the cross-file check falls back to *mc_for_merge* and, with
+    neither, has no live record to read and is skipped.
 
     Validation has to precede mutation, and for this path that is not a stylistic
     preference. Putting the incoming file where the live one was and only then checking it
@@ -638,6 +652,18 @@ def _refuse_corrupt_source_databases(
                 will_install = mc_for_merge is None or not (mc_for_merge / name).is_file()
                 _refuse_unless_json_object(src, name, installed=will_install)
 
+    # One check reads across files: a bundle that carries the session map WITHOUT the
+    # Slack workspace record, restored over a home whose live record names a workspace.
+    if _want(components, "config") and _will_install("session_map.json"):
+        home = live_home if live_home is not None else mc_for_merge
+        if home is not None:
+            _refuse_legacy_slack_links_without_record(
+                snap,
+                home,
+                record_installs=_will_install(SLACK_WORKSPACE_STATE_FILENAME)
+                and _bundle_record_names_workspace(snap),
+            )
+
     # A document inside a component tree is validated by ITS OWN reader. The tree is copied
     # wholesale on replace and file-by-file where the destination lacks the file on merge,
     # so "installed" is the same question as for a flat file; only an installed document
@@ -693,6 +719,99 @@ def _refuse_corrupt_source_databases(
                 if not _will_install(rel):
                     continue
                 _refuse_unless_sound(src, rel, strict=is_product_tree_database(rel))
+
+
+def _bundle_record_names_workspace(snap: Path) -> bool:
+    """Whether the bundle's Slack workspace record names a workspace (non-empty ``team_id``).
+
+    A record is protective only when it NAMES the workspace the bundle's Slack
+    links belong to: restored beside them, the first connected handshake
+    compares it and sweeps on a mismatch. A record whose ``team_id`` is empty
+    is the "no identity ever recorded" state -- the gateway's first-record
+    branch keeps every link and only records the workspace it connects to --
+    so installing it over a home bound to another workspace re-homes the links
+    exactly as installing no record would. No in-process writer produces an
+    empty record, but the gateway's own "repair or remove the record" guidance
+    makes one a plausible hand repair on a home later snapshotted. A record
+    the shape check refuses is not protective either; the install-path
+    validator refuses the bundle separately.
+    """
+    src = snap / SLACK_WORKSPACE_STATE_FILENAME
+    if not src.is_file():
+        return False
+    try:
+        parsed = json.loads(src.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(parsed, dict) or slack_workspace_record_defect(parsed) is not None:
+        return False
+    team_id = parsed.get("team_id")
+    return isinstance(team_id, str) and bool(team_id)
+
+
+def _refuse_legacy_slack_links_without_record(
+    snap: Path, home: Path, *, record_installs: bool
+) -> None:
+    """Refuse a bundle whose Slack destinations would be re-homed under a workspace they
+    were never written under, BEFORE the live map moves.
+
+    `slack_workspace.json` joined the `config` component after the session map did, so a
+    bundle staged by an earlier build carries the map -- and every Slack thread binding in
+    it -- with no record of the workspace those bindings belong to. Restore admits an
+    absent core file by design (the live one is kept), so over a home whose record names
+    workspace B the outcome is: the bundle's map replaces the live map, B's record stays,
+    and the next handshake with B sees no switch and sweeps nothing. Every restored
+    destination then routes B's traffic into threads of whatever workspace the bundle's
+    host was bound to -- exactly the exposure the record exists to close, re-opened by a
+    restore that reports success.
+
+    Refused only where it would happen: the bundle's map holds at least one Slack binding
+    (`session_map_slack_link_count`), no PROTECTIVE record installs alongside it
+    (*record_installs*: the bundle carries a record naming a workspace --
+    `_bundle_record_names_workspace`, an empty ``team_id`` protects nothing -- AND this
+    mode puts it in place; merge copies per file and keeps a live record, so a bundle's
+    record beside a live one travels nowhere while the map still installs where the live
+    one is absent), and the live record names a workspace. A home with no record, or an empty one, is the
+    first-boot case: the handshake adopts whatever it names, which is the pre-record
+    behaviour the record narrows and the same outcome the bundle's own host had. A bundle
+    with no Slack bindings has nothing to re-home. The live record is read with the same
+    shape check its reader applies; a live record that check refuses is not a binding
+    identity, and is not one this refusal keys on -- the Slack boot refuses it separately.
+    """
+    src = snap / "session_map.json"
+    if record_installs:
+        return  # a record naming the links' workspace lands with the map; the connect path sees any switch
+    try:
+        parsed = json.loads(src.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return  # `_refuse_unless_json_object` already refused, or refuses, an unreadable map
+    links = session_map_slack_link_count(parsed)
+    if links == 0:
+        return
+    # Read plainly, with no link screen: this read decides only whether to
+    # REFUSE, it writes nothing through the name, and a screen followed by a
+    # read of the same name is the two-instant window the link-screen gate
+    # forbids. An unreadable or unparseable live record is not a binding
+    # identity (the Slack boot refuses it on its own) and is not keyed on.
+    try:
+        record = json.loads((home / SLACK_WORKSPACE_STATE_FILENAME).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    if not isinstance(record, dict) or slack_workspace_record_defect(record) is not None:
+        return
+    team_id = record.get("team_id")
+    if not isinstance(team_id, str) or not team_id:
+        return
+    raise SourceComponentUnsound(
+        f"session_map.json in this snapshot carries {links} Slack conversation "
+        f"link(s) but no {SLACK_WORKSPACE_STATE_FILENAME} naming the Slack workspace "
+        f"they belong to would be installed with them (the snapshot has none, or an "
+        f"empty one), and this machine's Slack is bound to workspace {team_id}.\n"
+        "   Refusing to restore: the links would be kept as this workspace's and its "
+        "traffic would route into another workspace's threads. This snapshot was taken "
+        "by a build that did not record the workspace. Take a fresh snapshot with a "
+        "current build, or restore without the 'config' component."
+    )
 
 
 def _refuse_unless_json_object(src: Path, label: str, *, installed: bool) -> None:
@@ -785,6 +904,19 @@ def _refuse_unless_json_object(src: Path, label: str, *, installed: bool) -> Non
                     "   Refusing to restore it over live state: its reader reads fields "
                     "off each entry and would fail partway through."
                 )
+    # A reader that accepts only one shape: the object check above is necessary,
+    # not sufficient, and its refusal is louder than a parse error -- it takes
+    # its whole consumer down (the Slack workspace record refuses the Slack boot)
+    # while the restore reports success. Ask the file's own shape check.
+    validator = COMPONENT_JSON_VALIDATORS.get(src.name)
+    if validator is not None:
+        defect = validator(parsed)
+        if defect is not None:
+            raise SourceComponentUnsound(
+                f"{label} in this snapshot is not a record its reader accepts: {defect}.\n"
+                "   Refusing to restore it over live state: its reader treats that "
+                "shape as damage and refuses to run until the file is repaired or removed."
+            )
 
 
 def _refuse_unless_sound(src: Path, label: str, *, strict: bool) -> None:

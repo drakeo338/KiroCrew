@@ -6887,6 +6887,31 @@ class DashboardState:
         """Resolve an exact key or the newest timestamped bare ``chat-N`` key."""
         return _registry_for(self).resolve_slot(self, name, _CHAT_N_RE.fullmatch)
 
+    def forget_slack_links(self) -> list[str]:
+        """Drop every slot's in-memory Slack link and the thread reverse index.
+
+        The dashboard-side counterpart of ``SessionManager.clear_all_slack_links``,
+        called by the gateway once a Slack WORKSPACE SWITCH is durable (the
+        persisted rows are swept and the new identity recorded). The rows named
+        channels in the former workspace; a slot still carrying one would show as
+        linked, and ``get_linked_slot`` would keep resolving the former thread to
+        it, after the map that is the source of truth says otherwise. Nothing is
+        persisted here -- the map already was -- and no thread is notified: the
+        former workspace is not reachable through the new client. Returns the
+        names of the slots that were linked, for the caller's log line.
+        """
+        forgotten: list[str] = []
+        for name, slot in self._slots.items():
+            if slot._slack_linked or slot._slack_thread_ts or slot._slack_channel:
+                forgotten.append(name)
+            slot._slack_linked = False
+            slot._slack_thread_ts = ""
+            slot._slack_channel = ""
+        self._slack_to_slot.clear()
+        if forgotten:
+            self.push_slots_update()
+        return forgotten
+
     def link_slack(self, slot_name: str, thread_ts: str, channel_id: str) -> None:
         """Update a slot's Slack link state and persist to SessionStore."""
         slot = self._slots.get(slot_name)
