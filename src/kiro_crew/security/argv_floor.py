@@ -512,7 +512,16 @@ def _is_credential_mint(text_lower: str, *, raw_text: "str | None" = None) -> bo
                 # A separator NESTED in a command substitution is part of that
                 # substitution, not the end of this argv: ``<name> $(true; echo <verb>)``
                 # is still one command.  Only a top-level separator ends the scan.
-                if depth.feed(later):
+                ended = depth.feed(later)
+                # The token's TOP-LEVEL text with the substitutions cut out is the word
+                # bash hands over: ``$(case x in x) :;; esac)<verb>`` is the verb glued to
+                # a substitution's closer, and the whole token is not (R11).
+                if any(
+                    _is_mint_verb(_shell_normalizer._unmark(word))
+                    for word in depth.words + depth.alt_words
+                ):
+                    return True
+                if ended:
                     break
     return False
 
@@ -980,8 +989,11 @@ _SELF_CLOUD_DESTRUCTIVE_VERBS: frozenset[str] = frozenset(
 )
 
 
-def _self_cli_operands(tokens: "list[str]", i: int) -> "list[str]":
-    """Non-flag operand words the product CLI at program index *i* receives, in order.
+def _self_cli_operand_readings(
+    tokens: "list[str]", i: int, *, limit: "int | None" = None
+) -> "tuple[list[str], ...]":
+    """Two readings of the non-flag operand words the product CLI at program index
+    *i* receives, in order: per TOKEN, and per top-level WORD.
 
     A token that stays a ``-``/``--`` word after quote/redirect normalization is a
     global flag and is skipped -- the self-protection top-level flags are all
@@ -991,8 +1003,27 @@ def _self_cli_operands(tokens: "list[str]", i: int) -> "list[str]":
     ``kirocrew 2>/tmp/x restart`` still reads ``restart`` as the leading operand.
     Quoting is resolved by ``_normalize_operand``; the walk stops at the argv
     boundary so a chained later command's words are not attributed here.
+
+    The token reading sees a word's static spelling through an empty substitution
+    (``re$()start``).  The word reading is what bash builds: a command
+    substitution is one command list whose words are NOT this argv's, and the
+    text around it is one word -- ``<name> $(case x in x) :;; esac)<verb>`` and
+    ``<name> 2>$(: ; echo /dev/null) <verb>`` both run ``<verb>`` (R11).  A caller
+    matches either reading; each only ever adds a denial.
+
+    With *limit*, the walk stops once BOTH readings hold that many words: a caller
+    that matches a leading subcommand of *limit* words reads nothing past them, so a
+    long argv of anchors costs each anchor a few tokens rather than the rest of the
+    line (R18 GPT: 1,200 anchors; R19 Opus: a per-frame cache of the full readings
+    retained the quadratic result instead).
     """
     operands: "list[str]" = []
+    words: "list[str]" = []
+    # The closer reading behind an ``esac)`` the lookahead settled as a pattern: the
+    # words read so far, then that reading's own top-level words up to the event that
+    # refused it.  A sequence of its own, since a ``;;`` at top level may be an
+    # enclosing clause's and make that reading bash's (R28 Opus).
+    closer_words: "list[str] | None" = None
     depth = _SubstitutionDepth(rest=tokens[i + 1 :])
     skip_target = False
     for later in tokens[i + 1 :]:
@@ -1022,9 +1053,22 @@ def _self_cli_operands(tokens: "list[str]", i: int) -> "list[str]":
             operand = _decode_printf_escapes(operand[1:])
         if operand and not operand.startswith("-"):
             operands.append(operand)
-        if depth.feed(later):
+        ended = depth.feed(later)
+        if depth.alt_words and closer_words is None:
+            closer_words = list(words)
+        for word in depth.words + depth.alt_words:
+            word = _shell_normalizer._normalize_operand(word)
+            if word.startswith("$") and not word.startswith(("$(", "${")):
+                word = _decode_printf_escapes(word[1:])
+            if word and not word.startswith("-"):
+                words.append(word)
+                if closer_words is not None:
+                    closer_words.append(word)
+        if ended or (limit is not None and len(operands) >= limit and len(words) >= limit):
             break
-    return operands
+    if closer_words is not None:
+        return operands, words, closer_words
+    return operands, words
 
 
 def _operands_lead_with(operands: "list[str]", spec: "tuple[object, ...]") -> bool:
@@ -1162,7 +1206,10 @@ def _matches_self_subcommand(text_lower: str, spec: "tuple[object, ...]") -> boo
                 command_disqualified=disqualified,
             ):
                 continue
-            if _operands_lead_with(_self_cli_operands(tokens, prog_idx), spec):
+            if any(
+                _operands_lead_with(reading, spec)
+                for reading in _self_cli_operand_readings(tokens, prog_idx, limit=len(spec))
+            ):
                 return True
     return False
 
@@ -1653,10 +1700,22 @@ def _mask_quoted_separators(text: str) -> str:
 
 
 def _unmask_separators(text: str) -> str:
-    """Reverse :func:`_mask_quoted_separators` -- restore the boundary chars."""
-    for sep, sentinel in _QUOTED_SEP_SENTINELS.items():
-        text = text.replace(sentinel, sep)
-    return text
+    """Reverse :func:`_mask_quoted_separators` -- restore the boundary chars.
+
+    Also drops the tokenizer's quoted-grammar-word mark
+    (``_shell_normalizer._QUOTED_WORD_MARK``), so an operand spelled ``"case"``
+    compares as the text bash hands the command.
+    """
+    return text.translate(_UNMASK_TABLE)
+
+
+#: One translation table for :func:`_unmask_separators`: it runs once per operand per
+#: anchor in the ssh-family walk, so a chain of ``str.replace`` calls was the walk's
+#: hottest line on a long argv (R18).
+_UNMASK_TABLE = {
+    **{ord(sentinel): sep for sep, sentinel in _QUOTED_SEP_SENTINELS.items()},
+    **_shell_normalizer._UNMARK_TABLE,  # the tokenizer's quoted-text marks come off too
+}
 
 
 # An EMPTY command substitution expands to nothing, so ``s$()sh`` runs ``ssh``
@@ -2533,7 +2592,9 @@ def _resolve_line_assignments(text: str) -> str:
         for end, assigned, assigned_value in assignments:
             if end <= match.start() and assigned == name:
                 value = assigned_value
-        return match.group(0) if value is None else value
+        # An expanded value is never a reserved word to bash (``a=case; ssh $($a x in
+        # y) <host>``), so a grammar word is spliced in marked (R22 Opus).
+        return match.group(0) if value is None else _shell_normalizer._spliced(value)
 
     return _VAR_REFERENCE_RE.sub(_substitute, text)
 
@@ -2632,6 +2693,32 @@ def _function_call_binds_self(text: str) -> bool:
     return False
 
 
+def _literal_ticks(word: str) -> str:
+    """*word* with its quoted backticks (the tokenizer's mark) dropped, so a self-host
+    check reads ``echo hostname`` for a single-quoted ``echo`` of a backticked
+    ``hostname`` rather than a substitution."""
+    return word.replace(_shell_normalizer._QUOTED_TICK_MARK, "")
+
+
+def _glued_option_state(word: str, verb: str) -> "tuple[bool, bool, bool]":
+    """``(value_shadow, value_shadow_ambiguous, proxyjump_value_pending)`` for an
+    option WORD the walker completed out of a token that also closed a substitution
+    (``$(…)-p``): bash hands ``-p`` to ssh when the output is empty, so the next word
+    is its value, not the destination (R24 GPT: ``$(case …) :;; esac)-p 22 localhost``
+    let ``22`` take the host slot).  The same letter tables the option branch reads."""
+    bare = word.lstrip("-")
+    long = word.startswith("--")
+    value = long or (
+        bool(bare) and bare[-1] in _VERB_VALUE_TAKING_OPT_LETTERS.get(verb, frozenset())
+    )
+    ambiguous = (
+        not long
+        and bool(bare)
+        and bare[-1] in _VERB_FOLD_AMBIGUOUS_OPT_LETTERS.get(verb, frozenset())
+    )
+    return value, ambiguous, not long and bare.endswith("j")
+
+
 def _is_ssh_to_self(text_lower: str) -> bool:
     """True if *text_lower* opens an ssh/scp/sftp/rsync channel to THIS host.
 
@@ -2702,6 +2789,10 @@ def _is_ssh_to_self(text_lower: str) -> bool:
     # the operand can be spliced from statically-known text.  Values are
     # separator-free by construction, so the substitution cannot fabricate a
     # command boundary the masking below would misread.
+    # A recursive call receives token text (an ``--rsh=`` value, an ``-e`` value, a
+    # payload) that may carry the tokenizer's quoted-text marks: what bash hands the
+    # inner command is the unmarked text, and this floor re-tokenizes it from there.
+    text_lower = _shell_normalizer._unmark(text_lower)
     text_lower = _resolve_line_assignments(text_lower)
     # Mask every ``;``/``|`` that is QUOTED or backslash-escaped in the source to
     # a sentinel BEFORE tokenization, so a quoted separator surviving into a
@@ -2780,11 +2871,16 @@ def _is_ssh_to_self(text_lower: str) -> bool:
         rsync_rsh_assigned: dict[str, str] = {}
         prev_stripped_tok: "str | None" = None
         cmd_start = True  # the next token sits in program position
-        outer_depth = _SubstitutionDepth(command_position=True)
+        outer_depth = _SubstitutionDepth(command_position=True, rest=tokens)
         xargs_prefix_index: "int | None" = None  # a bare ``xargs`` in this simple command
         # Once per FRAME, not once per verb token: see ``_is_credential_mint``.
         disqualified: "bool | None" = None
         for i, token in enumerate(tokens):
+            # Every token of the frame is fed, whatever branch reads it below: the
+            # walker's token index is what its ``esac)`` lookahead slices *rest* by,
+            # and a skipped assignment or verb token left it behind the real index
+            # (R19 Opus: ``RSYNC_RSH=… echo $(case q in esac) ; rsync …`` denied).
+            outer_ended = outer_depth.feed(token)
             verb = _ssh_family_verb(token)
             if verb is None and bound_program_verbs:
                 stripped_prog = token.strip("\"'")
@@ -2792,7 +2888,9 @@ def _is_ssh_to_self(text_lower: str) -> bool:
                     _program_basename(stripped_prog)
                 )
             if verb is None:
-                stripped_tok = token.strip("\"'")
+                # The token's text as bash hands it on (quoted-text marks off): an
+                # RSYNC_RSH value or a payload is re-read by a recursive floor call.
+                stripped_tok = _shell_normalizer._unmark(token.strip("\"'"))
                 assign = _RSYNC_RSH_ASSIGN_RE.match(stripped_tok)
                 if assign is not None:
                     env_name = assign.group(1)
@@ -2820,7 +2918,7 @@ def _is_ssh_to_self(text_lower: str) -> bool:
                         rsync_rsh_export_marked.add(exported_name)
                         if exported_name in rsync_rsh_assigned:
                             rsync_rsh_exported[exported_name] = rsync_rsh_assigned[exported_name]
-                    if outer_depth.feed(token):
+                    if outer_ended:
                         # A command separator ends the simple command the
                         # leading assignment prefixed; pending does not cross it.
                         rsync_rsh_pending.clear()
@@ -2910,15 +3008,51 @@ def _is_ssh_to_self(text_lower: str) -> bool:
             rsh_value_pending = False  # previous token was rsync -e/--rsh (value is a local cmd)
             proxyjump_value_pending = False  # previous token was a detached -J (value = hop chain)
             opts_terminated = False  # an exact ``--`` ended option parsing (POSIX)
+            slot_word_open = False  # the destination word opened a substitution still unclosed
+            # The destination was a substitution whose output is not static: it may be
+            # EMPTY, in which case the next word is the destination bash dials -- so that
+            # word is checked for a LITERAL self spelling (``localhost``, ``127.0.0.1``,
+            # this host's names), not resolved fail-closed (``ssh $(cat hosts.txt)
+            # deploy.sh`` names the remote command, R20 Opus; the base allowed it).
+            slot_after_subst = False
             depth = _SubstitutionDepth(rest=tokens[i + 1 :])
             for arg in tokens[i + 1 :]:
-                stripped = arg.strip("\"'")
+                stripped = arg.strip("\"'")  # marks kept: a quoted ``>`` is not a redirect
                 # Classify BEFORE testing whether the token ends the argv
                 # (same order as the self-kill floor): a quoted remote payload
                 # may contain separator characters, and for scp/rsync a
                 # target can legally follow it.
                 if depth.grammar_next:
-                    pass  # a ``case`` WORD, ``in`` or PATTERN is grammar, not an operand
+                    # A ``case`` WORD, ``in`` or PATTERN is grammar, not an operand.  The
+                    # token that closes the compound AND the substitution may still carry
+                    # this command's word glued behind the closer (``$(case x in x) :;;
+                    # esac)localhost`` dials this host when the output is empty, R16): what
+                    # it completes at TOP level is an operand, so it is read after the feed.
+                    ended = depth.feed(arg)
+                    if (positional_pending or verb in ("scp", "rsync")) and any(
+                        _operand_targets_self(
+                            _unmask_separators(word),
+                            host_position=positional_pending
+                            and (not value_shadow or value_shadow_ambiguous),
+                        )
+                        for word in depth.words + depth.alt_words
+                    ):
+                        return True
+                    if slot_word_open and depth.top_level:
+                        slot_word_open, slot_after_subst = False, True  # ``esac)`` closed it
+                    glued_opt = [w for w in depth.words if w.startswith("-") and len(w) > 1]
+                    if glued_opt and not opts_terminated:
+                        if _routing_option_value_targets_self(
+                            _unmask_separators(glued_opt[-1]), value_slot=True
+                        ):
+                            return True
+                        option_shadow = True
+                        value_shadow, value_shadow_ambiguous, proxyjump_value_pending = (
+                            _glued_option_state(glued_opt[-1], verb)
+                        )
+                    if ended:
+                        break
+                    continue
                 elif redirect_target_pending:
                     # The filename after a detached ``>``/``2>``/``<`` — bash
                     # removes both words from argv before exec.
@@ -3093,25 +3227,96 @@ def _is_ssh_to_self(text_lower: str) -> bool:
                     # An operand, or the value of the preceding option.  Check
                     # it either way (fail-closed — see the docstring); only an
                     # UNSHADOWED operand consumes the ssh/sftp positional slot.
+                    # A word INSIDE a substitution is that command's argv, not
+                    # this one's: it never sits in the HOST slot (``ssh $(cat
+                    # hosts.txt | head -1) uptime`` -- ``hosts.txt`` resolved as
+                    # the destination and the line was refused, R10), and for
+                    # ssh/sftp it is not an operand at all -- ``ssh $(grep -v
+                    # localhost /etc/hosts | …) uptime`` names the self host only
+                    # to EXCLUDE it (base allows, R12).  What the token completes
+                    # at TOP level is this command's word: the token that CLOSES
+                    # the substitution carries the text glued after it (``ssh -C
+                    # $(: )localhost`` dials this host, R11).  scp/rsync check
+                    # every operand, body words included (base behaviour).  The
+                    # top-level words are read EVEN for a whole top-level token: one
+                    # that opens and closes a substitution with the host glued behind
+                    # it (``$(true)localhost``) is the host when the output is empty,
+                    # and the whole reading sees only the unresolved text (R16).
+                    top_before = depth.top_level
+                    in_slot = positional_pending and top_before
+                    whole = top_before or verb in ("scp", "rsync")
+                    ended = depth.feed(arg)
+                    # A QUOTED backtick is text to bash, never a backticked ``hostname``
+                    # substitution the self-host hints should read: a single-quoted
+                    # remote command runs it REMOTELY (R26 scope row).
+                    plain = _unmask_separators(_literal_ticks(stripped))
+                    readings = [plain] if whole else []
+                    readings += [
+                        word
+                        for word in (
+                            _unmask_separators(_literal_ticks(w))
+                            for w in depth.words + depth.alt_words
+                        )
+                        if word not in readings
+                    ]
                     checkable = positional_pending or verb in ("scp", "rsync")
-                    if checkable and _operand_targets_self(
-                        _unmask_separators(stripped),
-                        host_position=positional_pending
-                        and (not value_shadow or value_shadow_ambiguous),
+                    if checkable and any(
+                        _operand_targets_self(
+                            reading,
+                            host_position=(in_slot or not whole)
+                            and (not value_shadow or value_shadow_ambiguous)
+                            and not slot_after_subst,
+                        )
+                        for reading in readings
                     ):
                         return True
-                    if _routing_option_value_targets_self(
-                        _unmask_separators(stripped), value_slot=option_shadow
-                    ):
+                    if _routing_option_value_targets_self(plain, value_slot=option_shadow):
                         return True
-                    if not value_shadow and depth.top_level and "$(" not in arg and "`" not in arg:
-                        # round-18 rule, for a plain TOP-LEVEL word only: a word opening
-                        # or inside a substitution (``$(case … esac)``) is not the destination.
-                        positional_pending = False
+                    if (
+                        not value_shadow
+                        and positional_pending
+                        and top_before
+                        and not depth.top_level
+                    ):
+                        slot_word_open = True  # ``ssh $(cat`` -- the destination goes on
+                    glued_opt = [
+                        w for w in depth.words if w.startswith("-") and len(w) > 1 and w != stripped
+                    ]
+                    if glued_opt and not opts_terminated:
+                        # ``$(x)-p 22 localhost``: the completed word is an OPTION (R24 GPT)
+                        if _routing_option_value_targets_self(
+                            _unmask_separators(glued_opt[-1]), value_slot=True
+                        ):
+                            return True
+                        option_shadow = True
+                        value_shadow, value_shadow_ambiguous, proxyjump_value_pending = (
+                            _glued_option_state(glued_opt[-1], verb)
+                        )
+                        slot_word_open = False
+                        if ended:
+                            break
+                        continue
+                    if depth.top_level and (slot_word_open or (top_before and not value_shadow)):
+                        # round-18 rule: the destination is the word that started at top
+                        # level and has RETURNED to it -- in one token (``$(get-host)``) or
+                        # across tokens (``$(cat hosts.txt)``, R20 Opus).  A plain word
+                        # takes the slot; a substitution takes it SOFTLY (see
+                        # ``slot_after_subst``), since its output may be empty.
+                        if slot_word_open or "$(" in arg or "`" in arg:
+                            slot_after_subst = True
+                        else:
+                            positional_pending = False
+                        slot_word_open = False
                     option_shadow = False
                     value_shadow = False
                     value_shadow_ambiguous = False
-                if depth.feed(arg):
+                    if ended:
+                        break
+                    continue
+                ended = depth.feed(arg)
+                if slot_word_open and depth.top_level:
+                    slot_word_open, slot_after_subst = False, True  # ``2>/dev/null)`` closed it
+                if ended:
                     break
         # End of frame: a leading RSYNC_RSH selector that SURVIVED to here was
         # consumed by the frame's command (which may spawn a nested payload),
