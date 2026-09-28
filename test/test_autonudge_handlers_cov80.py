@@ -1173,15 +1173,18 @@ async def test_structured_legacy_row_carries_exactly_the_entitled_keys(
         "max_cycles",
         "cycle_count",
         "last_fire_ts",
+        "record_kind",
     }
     mapped = {name for name, _ in h._MONITOR_MAPPED_LEGACY_FIELDS}
     assert mapped <= set(row)
+    assert row["record_kind"] == "structured_monitor"
     # Withheld + published still covers every loop field, and the mapped names
     # are the exact overlap between the two sets.
-    assert set(h._MONITOR_WITHHELD_LEGACY_FIELDS) | set(row) == {
+    loop_fields = set(row) - {"record_kind"}
+    assert set(h._MONITOR_WITHHELD_LEGACY_FIELDS) | loop_fields == {
         field.name for field in dataclasses.fields(loop)
     }
-    assert mapped == set(h._MONITOR_WITHHELD_LEGACY_FIELDS) & set(row)
+    assert mapped == set(h._MONITOR_WITHHELD_LEGACY_FIELDS) & loop_fields
 
 
 @pytest.mark.asyncio
@@ -1217,6 +1220,8 @@ async def test_legacy_list_omits_cycle_accounting_only_for_structured_rows(
     assert rows["lp-1"]["cycle_count"] == 4
     assert rows["lp-1"]["last_fire_ts"] == 1700.0
     # The monitor carries its OWN values under the same names, because each has a
+    assert "record_kind" not in rows["lp-1"]
+    assert rows["mon-1"]["record_kind"] == "structured_monitor"
     # truthful equivalent. Withholding them let the component default max_cycles
     # to 0, whose label reads "0 = infinity" -- a stronger falsehood about a
     # budget-bounded record than a coarse-but-true number.

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { renderHook, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
@@ -124,6 +124,15 @@ describe("wakesPerDay", () => {
 });
 
 describe("useCrewPerpetual", () => {
+  // `H` is hoisted once for the module, so without a reset each test would
+  // inherit the previous test's call history and seeded implementations. The
+  // retry test counts calls from its own baseline (1, then +1), which is only
+  // deterministic when the history starts empty.
+  beforeEach(() => {
+    H.members.mockReset();
+    H.autonudgeList.mockReset();
+  });
+
   it("skips the initial roster refetch, then refreshes after a registry update", async () => {
     H.members.mockResolvedValue({
       members: [
@@ -160,5 +169,89 @@ describe("useCrewPerpetual", () => {
       }),
     );
     expect(H.members).toHaveBeenCalledTimes(2);
+  });
+
+  it("retry re-asks both reads and clears a failed reading once they answer", async () => {
+    // The reading is assembled from two queries. When one never answered, the
+    // host's notice offers `retry`, which must refetch BOTH -- not only the one
+    // that failed -- so the reading settles on two fresh answers.
+    H.members.mockResolvedValue({
+      members: [
+        {
+          name: "Radar",
+          slug: "radar",
+          slot_key: "member-radar",
+          perpetual: "on",
+        },
+      ],
+    });
+    H.autonudgeList
+      .mockRejectedValueOnce(new Error("boom"))
+      .mockResolvedValue({ enabled: true, loops: [] });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    );
+
+    const { result } = renderHook(
+      () => useCrewPerpetual("Radar", { poll: false }),
+      { wrapper },
+    );
+
+    await waitFor(() => expect(result.current.loaded).toBe(true));
+    expect(result.current.failed).toBe(true);
+    expect(H.autonudgeList).toHaveBeenCalledTimes(1);
+    expect(H.members).toHaveBeenCalledTimes(1);
+
+    result.current.retry();
+
+    await waitFor(() => expect(H.autonudgeList).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(H.members).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(result.current.failed).toBe(false));
+    expect(result.current.loaded).toBe(true);
+    expect(result.current.state).toBe("on");
+  });
+
+  it("does not label a full self-arm row as a structured monitor", async () => {
+    H.members.mockResolvedValue({
+      members: [
+        {
+          name: "Radar",
+          slug: "radar",
+          slot_key: "member-radar",
+          perpetual: "none",
+        },
+      ],
+    });
+    H.autonudgeList.mockResolvedValue({
+      enabled: true,
+      loops: [
+        {
+          id: "finite-self-arm",
+          slot_key: "member-radar",
+          message: "Check the queue.",
+          active: true,
+          idle_secs: 300,
+          max_cycles: 24,
+          max_runtime_secs: 3600,
+        },
+      ],
+    });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    );
+
+    const { result } = renderHook(() => useCrewPerpetual("Radar", { poll: false }), {
+      wrapper,
+    });
+
+    await waitFor(() => expect(result.current.loaded).toBe(true));
+    expect(result.current.state).toBe("none");
+    expect(result.current.monitor).toBe(false);
   });
 });

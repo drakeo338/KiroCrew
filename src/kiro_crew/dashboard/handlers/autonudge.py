@@ -283,10 +283,10 @@ _MONITOR_MAPPED_LEGACY_FIELDS: tuple[tuple[str, tuple[str, ...]], ...] = (
 #: tested in one change belongs in that change. So the liveness gap is REAL and
 #: recorded, not silently filled.
 #:
-#: Consequence a reader must know: a reduced row carries no positive marker
-#: saying "this is a monitor". It is told apart by the ABSENCE of the withheld
-#: fields, which is weaker than a marker and is the other half of what the
-#: rendering change should add.
+#: A reduced row carries one positive, subject-free marker:
+#: ``record_kind="structured_monitor"``. It reveals no target, provider kind,
+#: objective or owner text; it only prevents consumers from guessing monitor
+#: identity from whichever withheld field happens to be absent.
 
 
 def _serialize_for_legacy_reader(loop: Any) -> dict[str, Any]:
@@ -323,6 +323,7 @@ def _serialize_for_legacy_reader(loop: Any) -> dict[str, Any]:
         for attr in path:
             value = getattr(value, attr)
         payload[name] = value
+    payload["record_kind"] = "structured_monitor"
     return payload
 
 

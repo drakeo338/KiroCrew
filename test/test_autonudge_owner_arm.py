@@ -32,6 +32,7 @@ import hashlib
 import hmac
 import json
 import logging
+import os
 import shutil
 import stat
 from pathlib import Path
@@ -314,6 +315,53 @@ async def test_owner_entry_is_forgotten_when_the_add_conflicts(
     assert loop is None and status == 409
     reserved = svc.added[0]["loop_id"]
     assert sa.is_recorded_owner_arm(reserved, "member-scout") is False
+
+
+@pytest.mark.asyncio
+async def test_owner_entry_stays_with_committed_conflict_for_recovery(
+    audits: list[dict[str, Any]], trust_home: Path, tmp_path: Path
+) -> None:
+    from kiro_crew.autonudge import MonitorUpdateConflict
+
+    class CommittedConflictSvc(RecordingSvc):
+        def __init__(self) -> None:
+            super().__init__()
+            self.stored: NudgeLoop | None = None
+            self.rolled_back = False
+
+        async def add(self, **kw: Any) -> Any:
+            self.added.append(kw)
+            self.stored = NudgeLoop(
+                id=kw["loop_id"],
+                slot_key=kw["slot_key"],
+                message=kw["message"],
+                idle_secs=kw["idle_secs"],
+            )
+            raise MonitorUpdateConflict("owner admission changed")
+
+        def get_by_id(self, loop_id: str) -> NudgeLoop | None:
+            return self.stored if self.stored is not None and self.stored.id == loop_id else None
+
+        async def rollback_monitor_replacement(self, _loop_id: str) -> bool:
+            self.rolled_back = True
+            raise AssertionError("compare conflicts must not roll back with a stale token")
+
+    svc = CommittedConflictSvc()
+    loop, error, status = await authorize_and_add_nudge(
+        svc=svc,
+        state=_state({"member-scout": _slot("member")}),
+        slot_key="member-scout",
+        message="perpetual",
+        stop_sentinel_path=str(tmp_path / "stop"),
+        source="dashboard",
+        owner_arm=True,
+    )
+    assert loop is None and status == 409
+    assert error == "owner admission changed"
+    assert svc.rolled_back is False
+    reserved = svc.added[0]["loop_id"]
+    assert svc.get_by_id(reserved) is not None
+    assert sa.is_recorded_owner_arm(reserved, "member-scout") is True
 
 
 # ── (c) the fire-time guard ─────────────────────────────────────────────────
@@ -1112,6 +1160,43 @@ class TestPerpetualRoute:
         # ``active: true``. Siblings stay.
         assert sa._armed_by_of(running.id, running.slot_key) == ""
         assert sa.is_recorded_self_arm("sibling1", "member-other") is True
+
+    @pytest.mark.asyncio
+    async def test_off_keeps_a_pending_owner_takeover_paused_through_restart(
+        self, quiet_authz_audit: list[dict[str, Any]], trust_home: Path
+    ) -> None:
+        running = NudgeLoop(
+            id="pendingoff1",
+            slot_key="member-scout",
+            message="perpetual",
+            idle_secs=3600,
+            max_cycles=0,
+            max_runtime_secs=0,
+            active=True,
+            next_due_ts=9_999.0,
+        )
+        sa.record_self_arm(running.id, running.slot_key)
+        sa.begin_owner_arm_takeover(running.id, running.slot_key, "self")
+        svc = FakeLoopSvc(running)
+        with _route_patches(svc):
+            async with TestClient(
+                TestServer(_make_app({"member-scout": _member_slot_obj()}))
+            ) as client:
+                resp = await client.post(
+                    f"/api/members/{CREW}/perpetual",
+                    json={"member": CREW, "enabled": False},
+                )
+                await resp.read()
+        assert resp.status == 503
+        body = await resp.json()
+        assert body["code"] == "perpetual_off_failed"
+        assert "pending owner takeover" in body["error"]
+        assert [u["active"] for u in svc.updates] == [False]
+        assert running.active is False
+
+        sa.recover_owner_arm_revocation({running.id: (running.slot_key, "unused", False, 0, 0)})
+        assert sa.is_recorded_self_arm(running.id, running.slot_key) is True
+        assert sa.is_recorded_owner_arm(running.id, running.slot_key) is False
 
     @pytest.mark.asyncio
     async def test_off_reports_a_revoke_that_could_not_be_written_and_restores_the_loop(
@@ -2034,7 +2119,7 @@ class TestPerpetualRoute:
         assert members_audit[0]["tool_name"] == "autonudge_start"
 
     @pytest.mark.asyncio
-    async def test_on_leaves_an_active_unlimited_self_arm_self_owned(
+    async def test_on_takes_over_an_active_unlimited_self_arm(
         self,
         quiet_authz_audit: list[dict[str, Any]],
         members_audit: list[dict[str, Any]],
@@ -2062,8 +2147,9 @@ class TestPerpetualRoute:
                 await resp.read()
         assert resp.status == 200
         assert svc.updates == [] and svc.added == []
-        assert sa.is_recorded_self_arm(unlimited.id, unlimited.slot_key) is True
-        assert members_audit == []
+        assert sa.is_recorded_owner_arm(unlimited.id, unlimited.slot_key) is True
+        assert sa.is_recorded_self_arm(unlimited.id, unlimited.slot_key) is False
+        assert members_audit[0]["tool_name"] == "autonudge_start"
 
     @pytest.mark.asyncio
     async def test_failed_active_self_takeover_restores_the_self_party(
@@ -2834,16 +2920,26 @@ class TestMemberDirectivesOnPerpetualLoop:
         loop = self._loop(self_armed=True)
         sa.record_self_arm(loop.id, loop.slot_key)
         svc = FakeLoopSvc(loop)
-        removed: list[str] = []
+        removed: list[tuple[str, str, str]] = []
+        on_absent_callbacks: list[Any] = []
 
-        async def _remove(loop_id: str, *, stop_reason: str = "", stop_detail: str = "") -> None:
-            removed.append(loop_id)
+        async def _remove(
+            loop_id: str,
+            *,
+            stop_reason: str = "",
+            stop_detail: str = "",
+            on_absent: Any = None,
+        ) -> bool:
+            removed.append((loop_id, stop_reason, stop_detail))
+            on_absent_callbacks.append(on_absent)
+            return True
 
         svc.remove = _remove  # type: ignore[attr-defined]
         slot = SimpleNamespace(mode="member", _app="")
         with patch("kiro_crew.autonudge.get_instance", return_value=svc):
-            await sda._autonudge_stop(slot, "dashboard:member-scout", {})
-        assert removed == [loop.id]
+            await sda._autonudge_stop(slot, "dashboard:member-scout", {"reason": "done"})
+        assert removed == [(loop.id, sda.AUTONUDGE_STOP_REASON, "done")]
+        assert len(on_absent_callbacks) == 1 and callable(on_absent_callbacks[0])
 
 
 # ── (f) ownership checks, takeover, fail-closed reads, stop detail ──────────
@@ -3239,15 +3335,25 @@ class TestIndeterminateTrustRead:
         loop = NudgeLoop(id="chat0001", slot_key="chat-1-1", message="m", idle_secs=60)
         svc = FakeLoopSvc(loop)
         removed: list[str] = []
+        on_absent_callbacks: list[Any] = []
 
-        async def _remove(loop_id: str, *, stop_reason: str = "", stop_detail: str = "") -> None:
+        async def _remove(
+            loop_id: str,
+            *,
+            stop_reason: str = "",
+            stop_detail: str = "",
+            on_absent: Any = None,
+        ) -> bool:
             removed.append(loop_id)
+            on_absent_callbacks.append(on_absent)
+            return True
 
         svc.remove = _remove  # type: ignore[attr-defined]
         plain = SimpleNamespace(mode="", _app="")
         with patch("kiro_crew.autonudge.get_instance", return_value=svc):
             await sda._autonudge_stop(plain, "dashboard:chat-1-1", {})
         assert removed == ["chat0001"]
+        assert len(on_absent_callbacks) == 1 and callable(on_absent_callbacks[0])
 
 
 class TestStoppedDetailField:
@@ -3449,6 +3555,8 @@ class TestTakeoverTransaction:
         loop.active = True
         sa.record_self_arm(loop.id, loop.slot_key)
         svc = FakeLoopSvc(loop)
+        sibling = sa.begin_owner_arm_takeover("sib00061", "member-other", "")
+        real_settle = sa.settle_owner_arm_takeover
 
         def _raise(*_args: Any, **_kwargs: Any) -> bool:
             raise OSError("record unavailable")
@@ -3465,7 +3573,10 @@ class TestTakeoverTransaction:
         assert loop.active is False
         assert loop.max_cycles == 0 and loop.max_runtime_secs == 0
         assert [update.get("active") for update in svc.updates] == [True, False]
-        assert sa.read_arm_party_strict(loop.id, loop.slot_key) == ""
+        assert sa.read_arm_party_strict(loop.id, loop.slot_key) == "self"
+        assert sa.read_arm_party_strict(sibling.loop_id, sibling.slot_key) == ""
+        assert real_settle(sibling, commit=False) is True
+        assert sa.read_arm_party_strict(sibling.loop_id, sibling.slot_key) == ""
 
     @pytest.mark.asyncio
     async def test_critical_audit_failure_leaves_prior_party_and_loop_unchanged(
@@ -4173,6 +4284,27 @@ class TestOwnerArmRemovalBoundary:
         )
 
     @pytest.mark.asyncio
+    async def test_non_member_removal_ignores_an_unreadable_owner_record(
+        self, trust_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        loop = NudgeLoop(
+            id="rmplain1",
+            slot_key="chat-ordinary",
+            message="ordinary",
+            idle_secs=60,
+        )
+        path = sa.self_arm_record_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{not json", encoding="utf-8")
+        svc = self._service(tmp_path, loop, monkeypatch)
+        try:
+            assert await svc.remove(loop.id) is True
+            assert svc.get_by_id(loop.id) is None
+            assert path.read_text(encoding="utf-8") == "{not json"
+        finally:
+            svc.stop()
+
+    @pytest.mark.asyncio
     async def test_revoke_failure_keeps_the_loop_and_fails_removal(
         self, trust_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -4349,6 +4481,138 @@ class TestOwnerArmRemovalBoundary:
             reloaded._load()
             persisted = reloaded.get_by_slot(loop.slot_key)
             assert persisted is not None and persisted.id == "replacement"
+        finally:
+            release.set()
+            svc.stop()
+
+    @pytest.mark.asyncio
+    async def test_finalize_conflict_freezes_replacement_for_recovery(
+        self, trust_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew.autonudge import MonitorUpdateConflict
+
+        prior = self._loop("rmown006")
+        sa.record_owner_arm(prior.id, prior.slot_key)
+        svc = self._service(tmp_path, prior, monkeypatch)
+
+        async def _fail_finalize(_revocation: Any) -> bool:
+            raise MonitorUpdateConflict("owner admission changed")
+
+        monkeypatch.setattr(svc, "_commit_owner_revocation", _fail_finalize)
+        try:
+            with pytest.raises(MonitorUpdateConflict, match="owner admission changed"):
+                await svc.add(
+                    prior.slot_key,
+                    "replacement",
+                    idle_secs=3600,
+                    max_cycles=0,
+                    stop_sentinel_path="",
+                    loop_id="replacement",
+                )
+
+            replacement = svc.get_by_slot(prior.slot_key)
+            assert replacement is not None and replacement.id == "replacement"
+            assert replacement.active is True
+            assert replacement.id not in svc._timers
+            assert replacement.id in svc._deferred_monitor_replacements
+            with pytest.raises(MonitorUpdateConflict, match="still being finalized"):
+                await svc.update(replacement.id, active=False)
+            svc._reconcile_once()
+            svc._reconcile_once()
+            assert replacement.id not in svc._timers
+            assert replacement.id not in svc._reconcile_candidates
+            with pytest.raises(OSError, match="revocation is in progress"):
+                sa.recorded_arm_ids_for_slot_strict(prior.slot_key)
+        finally:
+            svc.stop()
+
+    @pytest.mark.asyncio
+    async def test_finalize_io_failure_rolls_back_before_reporting_error(
+        self, trust_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        prior = self._loop("rmown007")
+        sa.record_owner_arm(prior.id, prior.slot_key)
+        svc = self._service(tmp_path, prior, monkeypatch)
+        real_finalize = svc._commit_owner_revocation
+        attempts = 0
+
+        async def _fail_once(revocation: Any) -> bool:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise OSError("record unavailable")
+            return await real_finalize(revocation)
+
+        monkeypatch.setattr(svc, "_commit_owner_revocation", _fail_once)
+        try:
+            with pytest.raises(OSError, match="record unavailable"):
+                await svc.add(
+                    prior.slot_key,
+                    "replacement",
+                    idle_secs=3600,
+                    max_cycles=0,
+                    stop_sentinel_path="",
+                    loop_id="replacement",
+                )
+
+            assert attempts == 2
+            assert svc.get_by_slot(prior.slot_key) is prior
+            assert svc.get_by_id("replacement") is None
+            assert not svc._deferred_monitor_replacements
+            assert sa.is_recorded_owner_arm(prior.id, prior.slot_key) is True
+        finally:
+            svc.stop()
+
+    @pytest.mark.asyncio
+    async def test_finalize_failure_preserves_store_write_cancellation(
+        self, trust_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import asyncio
+        import threading
+
+        from kiro_crew.autonudge import MonitorUpdateConflict
+
+        prior = self._loop("rmown008")
+        sa.record_owner_arm(prior.id, prior.slot_key)
+        svc = self._service(tmp_path, prior, monkeypatch)
+        original_write = svc._write_state
+        committed = threading.Event()
+        release = threading.Event()
+
+        def _commit_then_park(payload: dict[str, Any]) -> None:
+            original_write(payload)
+            if any(row.get("id") == "replacement" for row in payload["loops"]):
+                committed.set()
+                release.wait(timeout=10)
+
+        async def _fail_finalize(_revocation: Any) -> bool:
+            raise MonitorUpdateConflict("owner admission changed")
+
+        monkeypatch.setattr(svc, "_write_state", _commit_then_park)
+        monkeypatch.setattr(svc, "_commit_owner_revocation", _fail_finalize)
+        replacement_task = asyncio.create_task(
+            svc.add(
+                prior.slot_key,
+                "replacement",
+                idle_secs=3600,
+                max_cycles=0,
+                stop_sentinel_path="",
+                loop_id="replacement",
+            )
+        )
+        try:
+            assert await asyncio.to_thread(committed.wait, 2)
+            replacement_task.cancel()
+            await asyncio.sleep(0.02)
+            assert not replacement_task.done()
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await replacement_task
+
+            replacement = svc.get_by_slot(prior.slot_key)
+            assert replacement is not None and replacement.active is True
+            assert replacement.id not in svc._timers
+            assert replacement.id in svc._deferred_monitor_replacements
         finally:
             release.set()
             svc.stop()
@@ -5700,12 +5964,19 @@ class TestRosterPerpetualReading:
     def _svc(loop: NudgeLoop | None) -> Any:
         return SimpleNamespace(get_by_slot=lambda slot_key: loop)
 
-    def test_admitted_active_loop_reads_on(self, trust_home: Path) -> None:
+    def test_owner_active_uncapped_loop_reads_on(self, trust_home: Path) -> None:
         from kiro_crew.dashboard.handlers.members import perpetual_state_of
 
         loop = NudgeLoop(id="ro000001", slot_key="member-scout", message="m", idle_secs=60)
-        sa.record_self_arm(loop.id, loop.slot_key)
+        sa.record_owner_arm(loop.id, loop.slot_key)
         assert perpetual_state_of(self._svc(loop), "member-scout") == "on"
+
+    def test_self_active_uncapped_loop_reads_none(self, trust_home: Path) -> None:
+        from kiro_crew.dashboard.handlers.members import perpetual_state_of
+
+        loop = NudgeLoop(id="ro000009", slot_key="member-scout", message="m", idle_secs=60)
+        sa.record_self_arm(loop.id, loop.slot_key)
+        assert perpetual_state_of(self._svc(loop), "member-scout") == "none"
 
     def test_preloaded_parties_keep_roster_rows_in_memory(
         self, monkeypatch: pytest.MonkeyPatch
@@ -5754,6 +6025,53 @@ class TestRosterPerpetualReading:
         loop = NudgeLoop(id="ro000004", slot_key="member-scout", message="m", idle_secs=60)
         with patch("kiro_crew.autonudge.is_structured_monitor_loop", return_value=True):
             assert perpetual_state_of(self._svc(loop), "member-scout") == "none"
+
+    @pytest.mark.parametrize(
+        ("max_cycles", "max_runtime_secs"),
+        [(24, 0), (0, 3600), (24, 3600)],
+        ids=["cycle-cap", "runtime-cap", "both-caps"],
+    )
+    def test_active_capped_loop_reads_none_before_its_party(
+        self, monkeypatch: pytest.MonkeyPatch, max_cycles: int, max_runtime_secs: int
+    ) -> None:
+        """A finite loop is a monitor, not Perpetual mode: it reads ``none`` so the
+        switch stays available for the ON route to take over and clear both caps,
+        and the cap check runs BEFORE the arm party is consulted -- no trust-record
+        read happens for a capped row, whether preloaded or per-row."""
+        from kiro_crew.dashboard.handlers.members import perpetual_state_of
+
+        loop = NudgeLoop(
+            id="ro000007",
+            slot_key="member-scout",
+            message="m",
+            idle_secs=60,
+            max_cycles=max_cycles,
+            max_runtime_secs=max_runtime_secs,
+        )
+
+        def _unexpected_read(loop_id: str, slot_key: str) -> str:
+            raise AssertionError("capped loop consulted its arm party")
+
+        monkeypatch.setattr(sa, "read_arm_party_strict", _unexpected_read)
+        assert perpetual_state_of(self._svc(loop), "member-scout") == "none"
+        admitted = {("ro000007", "member-scout"): "owner"}
+        assert perpetual_state_of(self._svc(loop), "member-scout", arm_parties=admitted) == "none"
+
+    def test_paused_capped_loop_still_reads_off(self) -> None:
+        """The cap rule is for ACTIVE loops only: a paused finite loop keeps its
+        ``off`` reading, because the ON route resumes THAT loop and lifts its caps."""
+        from kiro_crew.dashboard.handlers.members import perpetual_state_of
+
+        loop = NudgeLoop(
+            id="ro000008",
+            slot_key="member-scout",
+            message="m",
+            idle_secs=60,
+            max_cycles=24,
+            active=False,
+            stopped_reason="manual",
+        )
+        assert perpetual_state_of(self._svc(loop), "member-scout") == "off"
 
 
 # ── (h) the record's own masked leaf ────────────────────────────────────────
@@ -5933,17 +6251,36 @@ class TestLegacyRecordRetirement:
         self, trust_home: Path, monkeypatch: pytest.MonkeyPatch, caplog: Any
     ) -> None:
         self._legacy(trust_home, {"old00001": {"slot_key": "member-scout", "armed_ts": 1.0}})
-        real_unlink = Path.unlink
+        real_unlink = os.unlink
 
-        def _refuse(self: Path, *args: Any, **kwargs: Any) -> None:
-            if self.name == sa.SELF_ARM_RECORD_NAME:
+        def _refuse(path: Any, *args: Any, **kwargs: Any) -> None:
+            if Path(path).name == sa.SELF_ARM_RECORD_NAME:
                 raise OSError("busy")
-            real_unlink(self, *args, **kwargs)
+            real_unlink(path, *args, **kwargs)
 
-        monkeypatch.setattr(Path, "unlink", _refuse)
+        monkeypatch.setattr(os, "unlink", _refuse)
         with caplog.at_level(logging.WARNING, logger="kiro_crew.autonudge_selfarm"):
             assert sa.is_recorded_self_arm("old00001", "member-scout") is False
         assert any("could not discard" in rec.message for rec in caplog.records)
+
+    def test_a_linked_legacy_directory_cannot_delete_the_live_record(
+        self, trust_home: Path
+    ) -> None:
+        sa.record_owner_arm("live0001", "member-a")
+        sa.record_self_arm("live0002", "member-b")
+        live_dir = sa.self_arm_record_path().parent
+        legacy_dir = trust_home / sa._LEGACY_DIRNAME
+        if legacy_dir.exists():
+            shutil.rmtree(legacy_dir)
+        platform_compat.symlink_or_junction(live_dir, legacy_dir)
+        try:
+            sa.record_self_arm("live0003", "member-c")
+            assert sa.is_recorded_owner_arm("live0001", "member-a") is True
+            assert sa.is_recorded_self_arm("live0002", "member-b") is True
+            assert sa.is_recorded_self_arm("live0003", "member-c") is True
+            assert (live_dir / sa._LOCK_NAME).exists()
+        finally:
+            platform_compat.unlink_link_or_junction(legacy_dir)
 
     def test_no_legacy_file_is_a_no_op(self, trust_home: Path) -> None:
         sa._retire_legacy_record()

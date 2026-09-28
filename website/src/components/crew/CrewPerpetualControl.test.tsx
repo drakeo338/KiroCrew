@@ -86,7 +86,7 @@ describe('useCrewPerpetualSwitch across a crew change', () => {
     await waitFor(() => expect(screen.queryByTestId('member-perpetual-switch')).not.toBeNull())
     fireEvent.click(switchEl())
     await waitFor(() => expect(H.memberPerpetualSet).toHaveBeenCalledWith('radar', 'Radar', true))
-    await waitFor(() => expect(screen.getByTestId('refusal').textContent).toMatch(/watch task/))
+    await waitFor(() => expect(screen.getByTestId('refusal').textContent).toMatch(/repeating task/))
 
     // The reader selects another crewmate. Nothing was asked of Nova, so
     // nothing may be said about Nova.

@@ -138,6 +138,10 @@ store's remove), and a record an upgraded install still has at the `trust/` layo
 is DISCARDED on the gateway's first access, never migrated — that file sat in a
 sandbox-writable directory, so a forged entry in it cannot be told from a real one;
 the loops behind it are refused at fire time (audited) until armed again. The mask
+says cleanup may not follow that writable directory either: retirement opens
+`trust/` relative to a pinned data-home directory and removes only descriptor-
+relative names, while Windows holds and verifies the directory handle. A link or
+junction at `trust/` is refused and cannot name the live record or lock. The mask
 says nothing about bytes planted at the record's path before the boot that first
 masked its host, so the record is also SEALED: an HMAC over its entries under
 `token_signing.key` (masked and fenced in every build that ships it), which a plant

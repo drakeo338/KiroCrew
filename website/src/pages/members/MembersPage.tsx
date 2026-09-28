@@ -1900,7 +1900,7 @@ export default function MembersPage() {
   /** The loop record for a member's slot, but only when the roster counts it
    *  as the switch's loop: `GET /api/autonudge` lists a STRUCTURED MONITOR
    *  (`monitor_watch`) on the same slot as a reduced, active row, and that is
-   *  a watch task, not Perpetual mode -- the roster's `perpetual` reads `none`
+   *  a repeating task, not Perpetual mode -- the roster's `perpetual` reads `none`
    *  for it (`perpetual_state_of` applies `is_structured_monitor_loop`), so
    *  the badge, the status filter and the Work log block all follow that
    *  reading rather than the bare registry row. A roster without the field
@@ -3395,8 +3395,8 @@ export default function MembersPage() {
               describedBy={perpetualSwitch.canSwitch ? perpetualFactsId('member-perpetual') : undefined}
             />
           </div>
-          {/* The two facts that decide the press -- when the first wake happens
-              and what each wake costs -- before the readouts of a state that is
+          {/* The two facts that decide the press -- what work it continues and
+              what each check costs -- before the readouts of a state that is
               already running. The same component the detail page uses: a switch
               that is pressable in two places must state its cost in both. The
               muted second layer (caps, what OFF does, the cadence, which
@@ -3404,7 +3404,15 @@ export default function MembersPage() {
               surface, not the place to repeat it. */}
           <CrewPerpetualFacts sw={perpetualSwitch} testIdPrefix="member-perpetual" className="mb-2" />
           {/* A refused press, in plain words, above the state it did not change.
-              askAgent is safe here: this drawer holds no draft. */}
+              askAgent is ON under its default "Ask the agent" label: this
+              drawer holds no draft, so the generic hand-off (a NEW /chat with
+              the structured error context) can lose nothing, and the rule
+              `errors-use-error-notice` asks for it on action failures. It is
+              NOT relabeled "Open its chat": that remedy (open this crewmate's
+              chat, stop the task there) belongs to the direct crewmate-chat
+              link in `CrewPerpetualFacts` right above, which addresses the
+              exact chat; a hand-off button under the same words would name
+              a different one. */}
           <ErrorNotice
             variant="inline"
             title={t('components.crewPerpetualSection.change_failed')}
@@ -3481,7 +3489,7 @@ export default function MembersPage() {
                         data-testid="member-patrol-next"
                       >
                         {(() => {
-                          // The row already says "Next wake", so the value is
+                          // The row already says "Next check", so the value is
                           // the bare remainder; the due / unscheduled readings
                           // are the composer chip's own sentences.
                           const next = nextCycle(activePatrol, nowTs)

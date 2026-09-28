@@ -114,7 +114,7 @@ export default function CrewOverviewPane({
       value: perpetualUnknown
         ? unknown
         : perpetual === 'on'
-          ? t('components.crewPerpetualSection.node_on')
+          ? t('pages.artifactsPage.on')
           : t('components.crewPerpetualSection.node_off'),
       muted: perpetualUnknown || perpetual !== 'on',
       ghost: perpetualUnknown || perpetual === 'none',

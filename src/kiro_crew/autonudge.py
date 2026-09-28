@@ -3294,6 +3294,7 @@ class AutoNudgeService:
         validate_runtime_secs(max_runtime_secs, allow_unbounded=True)
         idle_secs = max(_MIN_IDLE_SECS, min(_MAX_IDLE_SECS, int(idle_secs)))
         transaction_cancelled = False
+        finalize_error: BaseException | None = None
         async with self._lock:
             if admission_check is not None and not admission_check():
                 raise NudgeAdmissionRefused("session changed before nudge arm committed")
@@ -3451,16 +3452,63 @@ class AutoNudgeService:
                     if existing.active:
                         self._arm_from_deadline(existing)
                 raise
-            self._arm_from_deadline(loop)
             if existing is not None:
-                transaction_cancelled = (
-                    await self._commit_owner_revocation(existing_owner_revocation)
-                    or transaction_cancelled
+                try:
+                    transaction_cancelled = (
+                        await self._commit_owner_revocation(existing_owner_revocation)
+                        or transaction_cancelled
+                    )
+                except (MonitorUpdateConflict, OSError, asyncio.CancelledError) as error:
+                    # The durable replacement must stay byte-for-value while trust
+                    # is unresolved. Deferred-replacement guards keep it unarmed
+                    # and immutable until this method leaves the service lock.
+                    self._deferred_monitor_replacements[loop.id] = (
+                        deepcopy(existing),
+                        deepcopy(loop),
+                        restore_existing_provider_credentials,
+                        existing_owner_revocation,
+                    )
+                    logger.error(
+                        "AutoNudge: replacement %s committed but owner admission "
+                        "finalization for displaced loop %s failed; replacement "
+                        "held unarmed for rollback or startup recovery",
+                        loop.id,
+                        existing.id,
+                        exc_info=True,
+                    )
+                    finalize_error = error
+                else:
+                    # Committed: the displaced row is gone from the store, so its
+                    # self-arm entry is revoked now, not before the write.
+                    self._revoke_self_arm_for(existing)
+                    self._emit("removed", existing)
+            if finalize_error is None:
+                self._arm_from_deadline(loop)
+        if finalize_error is not None:
+            rollback_error: BaseException | None = None
+            if not isinstance(finalize_error, MonitorUpdateConflict):
+                try:
+                    rolled_back = await self.rollback_monitor_replacement(loop.id)
+                    if not rolled_back:
+                        rollback_error = MonitorUpdateConflict(
+                            "committed replacement changed before rollback"
+                        )
+                except BaseException as exc:
+                    rollback_error = exc
+            failure = rollback_error or finalize_error
+            if rollback_error is not None:
+                logger.error(
+                    "AutoNudge: committed replacement %s could not be rolled back",
+                    loop.id,
+                    exc_info=rollback_error,
                 )
-                # Committed: the displaced row is gone from the store, so its
-                # self-arm entry is revoked now, not before the write.
-                self._revoke_self_arm_for(existing)
-                self._emit("removed", existing)
+            if (
+                transaction_cancelled
+                or isinstance(finalize_error, asyncio.CancelledError)
+                or isinstance(rollback_error, asyncio.CancelledError)
+            ):
+                raise asyncio.CancelledError from failure
+            raise failure
         self._emit("added", loop)
         logger.info("AutoNudge: added loop %s on slot %s (idle=%ds)", loop.id, slot_key, idle_secs)
         if transaction_cancelled:
@@ -3671,6 +3719,7 @@ class AutoNudgeService:
         if max_runtime_secs is not None:
             validate_runtime_secs(max_runtime_secs, allow_unbounded=True)
         async with self._lock:
+            self._assert_monitor_replacement_mutable(loop_id)
             loop = self._loops.get(loop_id)
             if not loop:
                 # Inside the hold, so the caller can inspect the slot before any
@@ -4141,14 +4190,19 @@ class AutoNudgeService:
     ) -> tuple[Any, bool]:
         """Fence owner admission and revoke provider trust before store deletion."""
         from kiro_crew import autonudge_selfarm
+        from kiro_crew.members import is_member_session_key
 
-        exact_row = durable_loop_row or self._durable_loop_row(loop)
-        owner_revocation, cancelled = await autonudge_selfarm.await_thread_deferring_cancellation(
-            autonudge_selfarm.begin_owner_arm_revocation,
-            loop.id,
-            loop.slot_key,
-            exact_row,
-        )
+        owner_revocation, cancelled = None, False
+        if is_member_session_key(loop.slot_key):
+            exact_row = durable_loop_row or self._durable_loop_row(loop)
+            owner_revocation, cancelled = (
+                await autonudge_selfarm.await_thread_deferring_cancellation(
+                    autonudge_selfarm.begin_owner_arm_revocation,
+                    loop.id,
+                    loop.slot_key,
+                    exact_row,
+                )
+            )
         restore_provider_credentials = False
         try:
             restore_provider_credentials = await self._provider_credentials_authorized(loop)
@@ -6309,6 +6363,8 @@ class AutoNudgeService:
             return
         eligible: set[str] = set()
         for loop in list(self._loops.values()):
+            if loop.id in self._deferred_monitor_replacements:
+                continue
             # Mirror _timer's own re-arm guard, not a stricter one: an
             # INACTIVE loop still waiting for terminal-completion evidence
             # owns a finite accepted-turn correlation whose expiry needs a

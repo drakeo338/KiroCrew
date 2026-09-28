@@ -1623,14 +1623,14 @@ async def _stop_resolved_loop(
                     on_absent=on_absent,
                     require_applied=_require_applied,
                 )
-            remove_kwargs: dict[str, Any] = {
+            member_remove_kwargs: dict[str, Any] = {
                 "stop_reason": AUTONUDGE_STOP_REASON,
                 "stop_detail": reason,
                 "on_absent": on_absent,
             }
             if guard is not None:
-                remove_kwargs["precondition"] = guard
-            applied = bool(await svc.remove(loop_id, **remove_kwargs))
+                member_remove_kwargs["precondition"] = guard
+            applied = bool(await svc.remove(loop_id, **member_remove_kwargs))
     else:
         # The removal leaves no row, so the agent's own reason travels in the WARNING
         # stop line instead (autonudge_stop_log); without it a self-stop is "removed".

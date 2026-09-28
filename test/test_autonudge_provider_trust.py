@@ -225,8 +225,6 @@ async def test_remove_keeps_monitor_when_durable_provider_revocation_fails(
         loop.monitor.kind,
         loop.monitor.target,
     )
-    owner_trust.record_owner_arm(loop.id, loop.slot_key, txn="exact-owner-token")
-    prior_owner_entry = owner_trust._read_record_strict_raw()[loop.id].copy()
 
     def fail_revocation(_monitor_id: str) -> None:
         raise OSError("durable revocation unavailable")
@@ -242,8 +240,6 @@ async def test_remove_keeps_monitor_when_durable_provider_revocation_fails(
     reloaded = AutoNudgeService(tmp_path / "store")
     reloaded._load()
     assert reloaded.get_by_id(loop.id) is not None
-    assert owner_trust.is_recorded_owner_arm(loop.id, loop.slot_key) is True
-    assert owner_trust._read_record_strict_raw()[loop.id] == prior_owner_entry
     assert trust.is_monitor_owner_credentials_recorded(
         loop.id,
         loop.slot_key,
@@ -833,7 +829,6 @@ async def test_request_cancellation_during_replacement_settlement_finishes_trans
     trust.record_monitor_owner_credentials(
         prior.id, prior.slot_key, prior.monitor.kind, prior.monitor.target
     )
-    owner_trust.record_owner_arm(prior.id, prior.slot_key)
     monkeypatch.setattr(
         autonudge_authz,
         "sel",
@@ -883,7 +878,6 @@ async def test_request_cancellation_during_replacement_settlement_finishes_trans
         assert replacement is not None and replacement.id != prior.id
         assert replacement.monitor is not None
         assert not svc._deferred_monitor_replacements
-        assert owner_trust.is_recorded_owner_arm(prior.id, prior.slot_key) is False
         assert trust.is_monitor_owner_credentials_recorded(
             replacement.id,
             replacement.slot_key,
@@ -917,7 +911,6 @@ async def test_request_cancellation_during_activation_joins_and_finalizes(
     trust.record_monitor_owner_credentials(
         prior.id, prior.slot_key, prior.monitor.kind, prior.monitor.target
     )
-    owner_trust.record_owner_arm(prior.id, prior.slot_key)
     monkeypatch.setattr(
         autonudge_authz,
         "sel",
@@ -965,7 +958,6 @@ async def test_request_cancellation_during_activation_joins_and_finalizes(
         with pytest.raises(asyncio.CancelledError):
             await request
         assert not svc._deferred_monitor_replacements
-        assert owner_trust.is_recorded_owner_arm(prior.id, prior.slot_key) is False
         assert trust.is_monitor_owner_credentials_recorded(
             replacement.id,
             replacement.slot_key,
@@ -999,7 +991,6 @@ async def test_update_is_refused_while_replacement_activation_is_pending(
     trust.record_monitor_owner_credentials(
         prior.id, prior.slot_key, prior.monitor.kind, prior.monitor.target
     )
-    owner_trust.record_owner_arm(prior.id, prior.slot_key, txn="exact-prior")
     monkeypatch.setattr(
         autonudge_authz,
         "sel",
@@ -1054,7 +1045,6 @@ async def test_update_is_refused_while_replacement_activation_is_pending(
         committed, error, status = await request
         assert error is None and status == 200 and committed is replacement
         assert not svc._deferred_monitor_replacements
-        assert not owner_trust.is_recorded_owner_arm(prior.id, prior.slot_key)
         assert not trust.is_monitor_owner_credentials_recorded(
             prior.id,
             prior.slot_key,
@@ -1096,7 +1086,6 @@ async def test_restart_recovers_committed_replacement_fences(tmp_path: Path) -> 
     trust.record_monitor_owner_credentials(
         prior.id, prior.slot_key, prior.monitor.kind, prior.monitor.target
     )
-    owner_trust.record_owner_arm(prior.id, prior.slot_key, txn="exact-prior")
     trust.prepare_monitor_owner_credentials(
         "replacement",
         prior.slot_key,
@@ -1119,7 +1108,6 @@ async def test_restart_recovers_committed_replacement_fences(tmp_path: Path) -> 
     )
     assert replacement.monitor is not None
     assert replacement.id in svc._deferred_monitor_replacements
-    assert owner_trust.is_recorded_owner_arm(prior.id, prior.slot_key) is False
     assert not trust.is_monitor_owner_credentials_recorded(
         replacement.id,
         replacement.slot_key,
@@ -1133,7 +1121,6 @@ async def test_restart_recovers_committed_replacement_fences(tmp_path: Path) -> 
     persisted = reloaded.get_by_slot(prior.slot_key)
     assert persisted is not None and persisted.monitor is not None
     assert persisted.id == replacement.id
-    assert owner_trust.is_recorded_owner_arm(prior.id, prior.slot_key) is False
     assert trust.is_monitor_owner_credentials_recorded(
         persisted.id,
         persisted.slot_key,

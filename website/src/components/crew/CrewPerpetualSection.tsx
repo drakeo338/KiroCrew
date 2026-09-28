@@ -15,16 +15,19 @@
  * does not decide the press -- live here alone, with the schedules.
  *
  * A refusal renders in plain words through `ErrorNotice` (the sentence comes
- * from `useCrewPerpetualSwitch`). The host remounts this section per crew
- * (`key={editing}`) and the hook scopes press state to the crewmate it was
- * pressed for, so a pending press or an error for one crewmate never shows on
- * another.
+ * from `useCrewPerpetualSwitch`) with NO agent hand-off: the remedy every
+ * coded refusal names is the crewmate's own chat, and the direct link to it
+ * already sits in `CrewPerpetualFacts` right above the notice. The host
+ * remounts this section per crew (`key={editing}`) and the hook scopes press
+ * state to the crewmate it was pressed for, so a pending press or an error
+ * for one crewmate never shows on another. A read that never answered offers
+ * a plain retry that re-asks both reads.
  */
 import { useEffect, useState } from 'react'
 import { Trans, useTranslation } from 'react-i18next'
-import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
+import { motion, useReducedMotion } from 'framer-motion'
 import { Goal } from 'lucide-react'
-import { Skeleton } from '../ui'
+import { Btn, Skeleton } from '../ui'
 import ErrorNotice from '../ErrorNotice'
 import { intervalText, nextCycle } from '../autoNudgeLoop'
 import { timeAgo } from '../../utils/timeAgo'
@@ -55,20 +58,24 @@ const TICK_MS = 15_000
 
 export default function CrewPerpetualSection({
   crew,
-  askAgent = false,
+  onCanSwitchChange,
 }: {
   crew: string
-  /** Offer the refusal's "Ask the agent" hand-off. `ErrorNotice`'s opt-in
-   *  contract: the hand-off navigates to the chat and unmounts the editor,
-   *  so the host passes `true` only while it holds no unsaved pane edit and
-   *  no open schedule draft (the same gate its own roster notices use). This
-   *  section cannot see the sibling panes' drafts, so it defaults to off. */
-  askAgent?: boolean
+  /** Reports whether the Schedules footer may describe the visible switch. */
+  onCanSwitchChange?: (canSwitch: boolean) => void
 }) {
   const { t } = useTranslation()
   const reduceMotion = useReducedMotion()
   const sw = useCrewPerpetualSwitch(crew)
-  const { loop, state, loaded, failed, monitor, enabled, canSwitch, threadClosed, refusalText } = sw
+  const { loop, state, loaded, failed, monitor, enabled, canSwitch, threadClosed, refusalText, retry } = sw
+
+  useEffect(() => {
+    onCanSwitchChange?.(canSwitch)
+  }, [canSwitch, onCanSwitchChange])
+  useEffect(
+    () => () => onCanSwitchChange?.(false),
+    [onCanSwitchChange],
+  )
 
   const [nowTs, setNowTs] = useState(() => Date.now() / 1000)
   const ticking = state === 'on'
@@ -113,24 +120,20 @@ export default function CrewPerpetualSection({
       </div>
       {/* What pressing this switch does, in two layers rather than one muted
           paragraph -- nine muted sentences is a wall a reader skips, and the
-          two facts that decide the press (when it starts and what it costs)
+          two facts that decide the press (what it does and what it costs)
           were the ones buried in it.
 
           FIRST layer, `CrewPerpetualFacts` -- shared with the Work log's host
           of the same switch, so neither place asks for a press on an unstated
-          cost -- a label/value list in body colour: the first wake, said
-          as timing AND scope -- after the interval already saved for this
-          crewmate (there is no interval editor on this page), and what that
-          wake actually does, which is continue the goals and instructions
-          given in its own chat and end the turn when nothing is due; then the
-          cost, one model turn per wake with the wakes-a-day the saved interval
-          works out to, so spend is a number on screen before the press rather
-          than an inference.
+          cost -- a label/value list in body colour: only work already asked
+          for in this crewmate's chat continues; if nothing is due, nothing
+          happens. Cost is stated as message-sized checks per day, not model
+          machinery, so spend is clear before the press.
 
           SECOND layer, muted, for what does NOT decide the press: that neither
           the wake count nor the running time is capped, what OFF does and does
           not stop, that scheduled jobs are separate work either way, that each
-          later interval starts when the current wake ENDS (so the cadence is
+          later interval starts when the current check ENDS (so the cadence is
           not a frequency) and is the crewmate's own to retune. The editor
           footer owns the separate Save explanation beside its button.
 
@@ -160,15 +163,16 @@ export default function CrewPerpetualSection({
           {t('components.crewPerpetualSection.refused_thread_not_open')}
         </p>
       )}
-      {/* The same refusal as the Crewmates page side panel, with the same
-          hand-off -- but only when the host says nothing is at stake: the
-          schedules pane below can hold an open, unsaved schedule draft this
-          notice cannot see (see `askAgent`). */}
+      {/* The same refusal as the Crewmates page side panel.
+          No hand-off: the direct crewmate-chat link in `CrewPerpetualFacts`
+          right above owns the remedy every refusal names (open its chat, stop
+          the task there); `ErrorNotice`'s hand-off would open a NEW /chat
+          under the same label, and unmount the schedules pane below, which can
+          hold an unsaved draft this notice cannot see. */}
       <ErrorNotice
         variant="inline"
         title={t('components.crewPerpetualSection.change_failed')}
         message={refusalText}
-        askAgent={askAgent}
         testId="crew-perpetual-error"
       />
       {!loaded ? (
@@ -176,28 +180,36 @@ export default function CrewPerpetualSection({
       ) : failed ? (
         // A read that never answered: never the affirmative "nothing wakes
         // this crewmate".
-        <>
+        <div className="flex flex-col items-start gap-2">
           {/* No hand-off: the schedules pane below can hold an open, unsaved
-              schedule draft this notice cannot see. */}
+              schedule draft this notice cannot see. The plain retry is the
+              way out: a failed read is usually transient, and it re-asks
+              BOTH reads (roster and registry), whichever one failed. */}
           <ErrorNotice
             variant="inline"
             message={t('components.crewPerpetualSection.load_failed')}
             testId="crew-perpetual-load-error"
           />
-        </>
+          <Btn onClick={retry} data-testid="crew-perpetual-load-retry">
+            {t('components.crewPerpetualSection.load_retry')}
+          </Btn>
+        </div>
       ) : (
-        <AnimatePresence initial={false} mode="wait">
-          {/* The verdict cross-fades on a state change: a stop that lands while
-              the page is open must read as a change, not a flicker. */}
+        /* The card itself never unmounts and owns a stable minimum height.
+           React swaps its one keyed content layer atomically; that new layer
+           then settles to full opacity without exposing both verdicts or a
+           hidden frame. */
+        <div
+          className="min-h-[12rem] rounded-md border border-border bg-bg-accent px-3 py-2.5 text-[11.5px] leading-relaxed sm:min-h-[7.5rem]"
+          data-testid="crew-perpetual-status"
+          data-state={state}
+        >
           <motion.div
             key={state}
-            initial={reduceMotion ? false : { opacity: 0 }}
+            initial={reduceMotion ? false : { opacity: 0.72 }}
             animate={{ opacity: 1 }}
-            exit={reduceMotion ? { opacity: 0, transition: { duration: 0 } } : { opacity: 0 }}
             transition={reduceMotion ? { duration: 0 } : { duration: 0.18, ease: [0.2, 0, 0, 1] }}
-            className="rounded-md border border-border bg-bg-accent px-3 py-2.5 text-[11.5px] leading-relaxed"
-            data-testid="crew-perpetual-status"
-            data-state={state}
+            data-testid="crew-perpetual-status-layer"
           >
             {state === 'on' ? (
               <>
@@ -288,6 +300,8 @@ export default function CrewPerpetualSection({
                                 <a
                                   key="chat"
                                   href={sw.chatHref}
+                                  target="_blank"
+                                  rel="noreferrer"
                                   className="text-accent underline underline-offset-2 hover:text-accent-hover"
                                   data-testid="crew-perpetual-monitor-chat"
                                   aria-label={t('components.crewPerpetualSection.fact_review_chat')}
@@ -307,7 +321,7 @@ export default function CrewPerpetualSection({
               </div>
             )}
           </motion.div>
-        </AnimatePresence>
+        </div>
       )}
     </section>
   )

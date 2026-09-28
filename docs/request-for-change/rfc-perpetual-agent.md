@@ -78,15 +78,18 @@ same state appears in the crew editor's **Schedules** pane, the Crewmates
 ### Uncapped is explicit, not hidden
 
 While the switch is on, no cycle count or elapsed-time limit stops future
-wakes. Each delivered wake uses one model turn, about the same work as answering
-one message. A wake with nothing due ends immediately. The owner can stop all
-new wakes at once with the same switch.
+wakes. Owner-facing copy says each check costs about what one reply in the
+crewmate chat costs; it never exposes the implementation term "model turn". The switch also
+says that it only continues work already asked for in the crewmate's chat, and
+that nothing happens when nothing is due. The owner can stop all new wakes at
+once with the same switch.
 
 The UI states these facts beside the control. A finite loop is never described
 as Perpetual. An unknown or unreadable authorization state fails closed and does
 not appear on. Install-wide disablement names the gateway operator as the actor,
 and a separate repeating task created in chat links back to that chat instead
-of pretending to be Perpetual mode.
+of pretending to be Perpetual mode; that link opens in a new tab so an
+unfinished schedule draft on the current page remains mounted.
 
 ### Authorization commits after the uncapped state
 

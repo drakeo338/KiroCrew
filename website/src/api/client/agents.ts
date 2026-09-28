@@ -88,11 +88,11 @@ export interface CrewTeam {
 }
 
 /** Free-form fields a crew publishes into its webview. The crew owns the shape,
- * so every value is unknown until the renderer narrows it. */
+ *  so every value is unknown until the renderer narrows it. */
 export type CrewPanelData = Record<string, unknown>
 
 /** Metadata half of GET /api/members/{slug}/panel. The document itself travels
- * beside it as `html`, already composed server-side from the template. */
+ *  beside it as `html`, already composed server-side from the template. */
 export interface CrewPanelMeta {
   template: string
   title: string
@@ -157,15 +157,15 @@ export function createAgentsEndpoints({ post, put, del, j, sessionKeyHeader: _sk
         headers: sessionKey ? { 'X-Session-Key': sessionKey } : { ..._sk },
       }).then(j),
     /** The model a new session on this Kiro Crew agent would run on. Empty
-     * `agent` resolves the configured default agent. */
+     *  `agent` resolves the configured default agent. */
     agentResolvedModel: (agent: string) =>
       fetch('/api/agents/resolved-model?agent=' + encodeURIComponent(agent)).then(j),
     /** Execution choices for a chat: configured members AND installed shared
-     * templates, each row tagged with its `selection_kind`. Read-only -- unlike
-     * the sync route it enrols nothing and allocates no member memory, so
-     * every picker can call it without side effects. Same `X-Session-Key`
-     * scoping as `kirocrewAgents`: project templates come from THIS chat's
-     * project, never from another open pane's. */
+     *  templates, each row tagged with its `selection_kind`. Read-only -- unlike
+     *  the sync route it enrols nothing and allocates no member memory, so
+     *  every picker can call it without side effects. Same `X-Session-Key`
+     *  scoping as `kirocrewAgents`: project templates come from THIS chat's
+     *  project, never from another open pane's. */
     agentCatalog: (sessionKey?: string) =>
       fetch('/api/agents/catalog', {
         headers: sessionKey ? { 'X-Session-Key': sessionKey } : { ..._sk },
@@ -231,12 +231,12 @@ export function createAgentsEndpoints({ post, put, del, j, sessionKeyHeader: _sk
         /** Last-modified timestamp, or null when no notes file exists yet. */
         updated_ts: number | null
         /** The text above was redacted on the way out (a secret-like string or an
-         * exfiltration URL replaced by its placeholder); the panel says so above
-         * the notes. */
+         *  exfiltration URL replaced by its placeholder); the panel says so above
+         *  the notes. */
         redacted: boolean
         /** The file ran past the briefing cap, so the text above ends in the
-         * truncation marker instead of the tail; the panel says so above the
-         * notes. */
+         *  truncation marker instead of the tail; the panel says so above the
+         *  notes. */
         truncated: boolean
       }>,
     // Crewmate teams: a name plus an ordered member list, stored by the gateway
@@ -267,8 +267,8 @@ export function createAgentsEndpoints({ post, put, del, j, sessionKeyHeader: _sk
     deleteKirocrewAgent: (name: string) =>
       del('/api/agents/' + encodeURIComponent(name)).then(j),
     /** Stage a crew's picture on the server (a `.pending` file only — the
-     * config PUT with `avatar: {kind:'image'}` is what promotes it live,
-     * keeping the editor's Apply→Save two-step a real commit point). */
+     *  config PUT with `avatar: {kind:'image'}` is what promotes it live,
+     *  keeping the editor's Apply→Save two-step a real commit point). */
     /**
      * The crew appearance library — the packs a crew can wear.
      *
@@ -295,8 +295,8 @@ export function createAgentsEndpoints({ post, put, del, j, sessionKeyHeader: _sk
       detail: (id: string) =>
         fetch('/api/appearances/' + encodeURIComponent(id)).then(j) as Promise<unknown>,
       /** Install an exported pack. The JSON envelope, not multipart: the bundle is
-       * already parsed client-side to reject an obviously wrong pick, so posting
-       * it back as a file would only re-serialize what we hold. */
+       *  already parsed client-side to reject an obviously wrong pick, so posting
+       *  it back as a file would only re-serialize what we hold. */
       importBundle: (bundle: unknown) =>
         post('/api/appearances/import', { bundle }).then(j) as Promise<{
           ok?: boolean
@@ -304,7 +304,7 @@ export function createAgentsEndpoints({ post, put, del, j, sessionKeyHeader: _sk
           error?: string
         }>,
       /** Delete a custom pack. Rejects 409 while a crew wears it, and the rejection
-       * body names those crews — `force` is deliberately NOT exposed. */
+       *  body names those crews — `force` is deliberately NOT exposed. */
       remove: (id: string) =>
         del('/api/appearances/' + encodeURIComponent(id)).then(j) as Promise<{
           ok?: boolean

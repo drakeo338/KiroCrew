@@ -24,7 +24,8 @@
  * where that surface puts its notices; coded answers first (the server's
  * `code`): the thread must be open once before the switch can address it; a
  * structured monitor is not this switch's loop; a gateway with auto-nudge off
- * has no loop to arm. Anything else shows the server's own sentence.
+ * has no loop to arm. Anything else uses one plain fallback; server wording
+ * stays out of the page.
  */
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
@@ -33,7 +34,6 @@ import { api } from '../../api/client'
 import { MEMBERS_ROSTER_QUERY_KEY } from '../../api/membersQuery'
 import { fmtNumber } from '../../i18n/format'
 import { parseErrorCode } from '../../utils/errorReport'
-import { errMessage } from '../../utils/thunkError'
 import { Toggle } from '../ui'
 import { AUTONUDGE_LOOPS_QUERY_KEY, intervalText } from '../autoNudgeLoop'
 import {
@@ -128,7 +128,7 @@ export function useCrewPerpetualSwitch(crew: string, options?: CrewPerpetualOpti
     ? (() => {
         const code = parseErrorCode((refusal as { body?: string }).body)
         const key = code ? REFUSAL_KEY[code] : undefined
-        return key ? t(key) : errMessage(refusal)
+        return key ? t(key) : t('components.crewPerpetualSection.refused_unknown')
       })()
     : ''
 
@@ -156,12 +156,12 @@ export function perpetualFactsId(testIdPrefix: string): string {
 }
 
 /**
- * The facts that decide the press, for BOTH hosts of the switch: when the
- * first wake happens, what each wake costs, and that future wakes can be stopped
- * at any time. It is the switch's accessible
+ * The facts that decide the press, for BOTH hosts of the switch: what work it
+ * continues, what each check costs in message-sized terms, and where the owner
+ * reviews that work. It is the switch's accessible
  * description (`aria-describedby={perpetualFactsId(prefix)}`), which is why it
  * is rendered from one place rather than written out per host -- a host that
- * states only one of the two, or none, asks for a press on an unstated cost.
+ * states only one fact, or none, asks for a press on an unstated cost.
  *
  * Body colour, label/value rows: the PRIMARY layer. What does not decide the
  * press (caps, what OFF does, scheduled jobs, the cadence, which control
@@ -171,7 +171,7 @@ export function perpetualFactsId(testIdPrefix: string): string {
  *
  * Both facts are stated with the SAME interval -- this crewmate's own record
  * when the registry holds one, else the interval an arm starts on -- so the
- * timing and the cost can never disagree on screen. Nothing renders while the
+ * check timing and cost can never disagree on screen. Nothing renders while the
  * switch cannot be offered: an unknown state has no cost to state, and the
  * control is withheld in exactly the same cases.
  */

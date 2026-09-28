@@ -58,7 +58,10 @@ describe('CrewPerpetualSection', () => {
     H.autonudgeList.mockResolvedValue({ enabled: true, loops: [LOOP] })
     wrap(<CrewPerpetualSection crew="Radar" />)
     await waitFor(() => expect(switchEl().getAttribute('aria-checked')).toBe('true'))
-    expect(screen.getByTestId('crew-perpetual-status').getAttribute('data-state')).toBe('on')
+    const status = screen.getByTestId('crew-perpetual-status')
+    expect(status.getAttribute('data-state')).toBe('on')
+    expect(status.textContent).toMatch(/^On\. Checking on its own\./)
+    expect(status.querySelectorAll('dl > div')).toHaveLength(4)
     const interval = screen.getByTestId('crew-perpetual-interval')
     expect(interval.textContent).toMatch(/1\s?h/)
     expect(interval.parentElement?.className).toContain('flex-col')
@@ -94,25 +97,21 @@ describe('CrewPerpetualSection', () => {
     expect(document.getElementById('crew-perpetual-facts')).toBe(facts)
 
     const firstWake = screen.getByTestId('crew-perpetual-fact-first-wake')
-    // Timing: one interval after the press, stated with the interval this
-    // crewmate has saved (1 h here) and hedged, since a wake can run long.
-    expect(firstWake.textContent).toMatch(/^About 1\s?h after you turn it on\./)
-    // Scope: what that wake actually does, in the reader's own terms.
+    // Scope leads: the mode continues only work already asked for in this
+    // crewmate's chat, then states the next check and safe idle case.
     expect(firstWake.textContent).toMatch(
-      /It picks up the goals and instructions you gave it in its own chat\. If nothing is due, the wake ends immediately\. Turn it off any time; no new wake starts, and work already running finishes\./,
+      /^It only continues work you already asked for in this crewmate's chat\. About 1\s?h after you turn it on, it checks that work again\. If nothing is due, nothing happens\.$/,
     )
-    // Cost: one model turn per wake, the ordinary-answer unit that explains
-    // that turn, AND what the saved interval works out to, so spend is a
-    // number on screen rather than an inference. 3600s → 24/day.
+    // Cost uses the user's unit, a message, never model machinery. 3600s → 24/day.
     expect(screen.getByTestId('crew-perpetual-fact-each-wake').textContent).toBe(
-      'Each wake uses one model turn, about the same work as answering one message. At this interval, that is about 24 turns a day.',
+      'Turn it off anytime to stop new checks. Each check costs about what one reply in its chat costs. At this interval, that can be about 24 messages a day.',
     )
     // Review: the thing an uncapped loop will act on is the crewmate's own
     // chat, so the third fact is a link to that chat, addressed by the roster
     // name (not the slug) the section was given.
     const reviewChat = screen.getByTestId('crew-perpetual-review-chat')
     expect(reviewChat.tagName).toBe('A')
-    expect(reviewChat.textContent).toBe("Review this crewmate's chat")
+    expect(reviewChat.textContent).toBe("Open its chat")
     expect(reviewChat).toHaveAttribute('href', '/members?member=Radar')
     // Targets a new browsing context and sends no referrer; the attributes are
     // what is checked here, not what a browser does with them.
@@ -131,23 +130,23 @@ describe('CrewPerpetualSection', () => {
     // Each fact wears its own label, so the list reads as label/value to a
     // screen reader instead of three sentences in a row.
     const labels = dts.map((dt) => dt.textContent)
-    expect(labels).toEqual(['First wake', 'Each wake', 'Before turning on'])
+    expect(labels).toEqual(['What it does', 'What it costs', 'Before turning on'])
 
     // The secondary layer is muted and keeps every fact that does NOT decide
     // the press: no cap on count or duration, what OFF does and does not stop,
     // and that scheduled jobs are separate work either way.
     const limits = screen.getByTestId('crew-perpetual-limits')
     expect(limits.className).toContain('text-muted')
-    expect(limits.textContent).toMatch(/Nothing caps how many times it wakes or how long it keeps going;/)
-    expect(limits.textContent).toMatch(/turning it off stops new wakes immediately, and work already running finishes\./)
-    expect(limits.textContent).toMatch(/Scheduled jobs run separately either way\./)
-    // The cadence is measured from the END of a wake (never a frequency), the
+    expect(limits.textContent).toMatch(/There is no set end\./)
+    expect(limits.textContent).toMatch(/Turn it off here to stop new checks at once; work already running finishes\./)
+    expect(limits.textContent).toMatch(/Scheduled jobs run separately\./)
+    // The cadence is measured from the END of a check (never a frequency), the
     // interval is the crewmate's own to retune, and the two saving controls on
     // this screen are told apart.
     const cadence = screen.getByTestId('crew-perpetual-cadence')
     expect(cadence.className).toContain('text-muted')
-    expect(cadence.textContent).toMatch(/Each later interval starts when the current wake ends/)
-    expect(cadence.textContent).toMatch(/the crewmate can retune that interval from inside a wake/)
+    expect(cadence.textContent).toMatch(/Each later interval starts when the current check ends/)
+    expect(cadence.textContent).toMatch(/the crewmate can retune that interval from inside a check/)
     expect(cadence.textContent).not.toMatch(/Save changes/)
     // Neither muted line is inside the list the switch is described by, so
     // neither is read out as part of the switch's description.
@@ -167,8 +166,8 @@ describe('CrewPerpetualSection', () => {
     H.autonudgeList.mockResolvedValue({ enabled: true, loops: [] })
     wrap(<CrewPerpetualSection crew="Radar" />)
     await screen.findByTestId('crew-perpetual-facts')
-    expect(screen.getByTestId('crew-perpetual-fact-first-wake').textContent).toMatch(/^About 1\s?h after you turn it on\./)
-    expect(screen.getByTestId('crew-perpetual-fact-each-wake').textContent).toMatch(/about 24 turns a day/)
+    expect(screen.getByTestId('crew-perpetual-fact-first-wake').textContent).toMatch(/About 1\s?h after you turn it on/)
+    expect(screen.getByTestId('crew-perpetual-fact-each-wake').textContent).toMatch(/about 24 messages a day/)
   })
 
   it('states the per-day cost from the interval the crewmate retuned itself', async () => {
@@ -177,8 +176,8 @@ describe('CrewPerpetualSection', () => {
     H.autonudgeList.mockResolvedValue({ enabled: true, loops: [{ ...LOOP, idle_secs: 900 }] })
     wrap(<CrewPerpetualSection crew="Radar" />)
     await screen.findByTestId('crew-perpetual-facts')
-    expect(screen.getByTestId('crew-perpetual-fact-each-wake').textContent).toMatch(/about 96 turns a day/)
-    expect(screen.getByTestId('crew-perpetual-fact-first-wake').textContent).toMatch(/^About 15\s?m/)
+    expect(screen.getByTestId('crew-perpetual-fact-each-wake').textContent).toMatch(/about 96 messages a day/)
+    expect(screen.getByTestId('crew-perpetual-fact-first-wake').textContent).toMatch(/About 15\s?m after you turn it on/)
   })
 
   it('withholds the explainer when the switch is not offered, so nothing describes a press that cannot happen', async () => {
@@ -226,6 +225,7 @@ describe('CrewPerpetualSection', () => {
     H.autonudgeList.mockResolvedValueOnce({ enabled: true, loops: [] })
     wrap(<CrewPerpetualSection crew="Radar" />)
     await screen.findByTestId('crew-perpetual-reason')
+    const status = screen.getByTestId('crew-perpetual-status')
     fireEvent.click(switchEl())
     // The mutation runs its function on the next tick, so the call is awaited.
     await waitFor(() => expect(H.memberPerpetualSet).toHaveBeenCalledWith('radar', 'Radar', true))
@@ -239,6 +239,12 @@ describe('CrewPerpetualSection', () => {
     answer({ ok: true, loop: LOOP })
     await waitFor(() => expect(switchEl().getAttribute('aria-checked')).toBe('true'))
     expect(screen.getByTestId('crew-perpetual-control').getAttribute('aria-busy')).toBeNull()
+    // The card is one persistent layout slot. Only its overlapping keyed layer
+    // changes, so ON cannot pass through an empty card between OFF and ON.
+    expect(screen.getByTestId('crew-perpetual-status')).toBe(status)
+    expect(status.textContent).toMatch(/^On\. Checking on its own\./)
+    expect(status).not.toHaveTextContent(/Perpetual mode has never been turned on/)
+    expect(status.querySelectorAll('[data-testid="crew-perpetual-status-layer"]')).toHaveLength(1)
     // Success is STATED where "Saving…" was, briefly: the press happens beside a
     // Save footer that stays disabled, so the card changing is not the only cue.
     expect(screen.getByTestId('crew-perpetual-save-state').textContent).toBe('Saved')
@@ -255,33 +261,34 @@ describe('CrewPerpetualSection', () => {
     wrap(<CrewPerpetualSection crew="Radar" />)
     await screen.findByTestId('crew-perpetual-reason')
     fireEvent.click(switchEl())
-    expect((await screen.findByTestId('crew-perpetual-error')).textContent).toMatch(/watch task it set up in its chat.*stop the task there first/)
+    expect((await screen.findByTestId('crew-perpetual-error')).textContent).toMatch(/repeating task from its chat.*stop the task there first/)
     expect(switchEl().getAttribute('aria-checked')).toBe('false')
     expect(switchEl().getAttribute('aria-disabled')).toBeNull()
-    // No hand-off by default: the host's schedules pane may hold a draft this
-    // section cannot see, and the hand-off would unmount it.
-    expect(screen.queryByText('Ask the agent')).toBeNull()
+    // No agent hand-off on the refusal, ever: `ErrorNotice`'s hand-off opens a
+    // NEW /chat, not this crewmate's, and the remedy the sentence names (open
+    // its chat, stop the task there) is the direct link already on screen in
+    // the fact list above. One "Open its chat" on the page, and it is truthful.
+    const notice = screen.getByTestId('crew-perpetual-error')
+    expect(notice.querySelector('button')).toBeNull()
+    const chatLinks = screen.getAllByText('Open its chat')
+    expect(chatLinks).toHaveLength(1)
+    expect(chatLinks[0]).toBe(screen.getByTestId('crew-perpetual-review-chat'))
+    expect(chatLinks[0].tagName).toBe('A')
+    expect(chatLinks[0]).toHaveAttribute('href', '/members?member=Radar')
   })
 
-  it('offers the same "Ask the agent" hand-off as the side panel when the host says nothing is at stake', async () => {
-    H.autonudgeList.mockResolvedValue({ enabled: true, loops: [] })
-    H.memberPerpetualSet.mockRejectedValue(
-      Object.assign(new Error('x'), { status: 409, body: JSON.stringify({ error: 'x', code: 'structured_monitor_not_convertible' }) }),
-    )
-    wrap(<CrewPerpetualSection crew="Radar" askAgent />)
-    await screen.findByTestId('crew-perpetual-reason')
-    fireEvent.click(switchEl())
-    const notice = await screen.findByTestId('crew-perpetual-error')
-    expect(notice.querySelector('button')?.textContent).toBe('Ask the agent')
-  })
-
-  it('an uncoded refusal shows the server\'s own sentence', async () => {
+  it('an uncoded refusal shows plain copy and no agent hand-off', async () => {
     H.autonudgeList.mockResolvedValue({ enabled: true, loops: [LOOP] })
     H.memberPerpetualSet.mockRejectedValue(Object.assign(new Error('trust record unreadable'), { status: 503, body: '' }))
     wrap(<CrewPerpetualSection crew="Radar" />)
     await waitFor(() => expect(switchEl().getAttribute('aria-checked')).toBe('true'))
     fireEvent.click(switchEl())
-    expect((await screen.findByTestId('crew-perpetual-error')).textContent).toMatch(/trust record unreadable/)
+    const notice = await screen.findByTestId('crew-perpetual-error')
+    expect(notice).toHaveTextContent(/Try again\. If it still fails/)
+    expect(notice).not.toHaveTextContent(/trust record unreadable/)
+    expect(notice.querySelector('button')).toBeNull()
+    // The direct crewmate-chat link stays where it was, above the notice.
+    expect(screen.getByTestId('crew-perpetual-review-chat')).toHaveAttribute('href', '/members?member=Radar')
     expect(H.memberPerpetualSet).toHaveBeenCalledWith('radar', 'Radar', false)
   })
 
@@ -305,7 +312,7 @@ describe('CrewPerpetualSection', () => {
     H.members.mockResolvedValue({ members: [{ ...ROW, perpetual: 'none' }] })
     H.autonudgeList.mockResolvedValue({
       enabled: true,
-      loops: [{ id: 'mon1', slot_key: 'member-radar', active: true, idle_secs: 300, next_due_ts: now + 200, gate: false }],
+      loops: [{ id: 'mon1', slot_key: 'member-radar', active: true, idle_secs: 300, next_due_ts: now + 200, gate: false, record_kind: 'structured_monitor' }],
     })
     wrap(<CrewPerpetualSection crew="Radar" />)
     await waitFor(() => expect(switchEl().getAttribute('aria-checked')).toBe('false'))
@@ -316,6 +323,10 @@ describe('CrewPerpetualSection', () => {
     const reason = screen.getByTestId('crew-perpetual-reason').textContent ?? ''
     expect(reason).toMatch(/^off\..*repeating task it set up in its chat is running instead.*open its chat.*stop the task there first/i)
     expect(screen.getByTestId('crew-perpetual-monitor-chat')).toHaveAttribute('href', '/members?member=Radar')
+    // Opens in a new tab so a Schedules navigation cannot unmount JobForm
+    // and lose an unsaved draft.
+    expect(screen.getByTestId('crew-perpetual-monitor-chat')).toHaveAttribute('target', '_blank')
+    expect(screen.getByTestId('crew-perpetual-monitor-chat')).toHaveAttribute('rel', 'noreferrer')
     expect(screen.getByTestId('crew-perpetual-monitor-chat')).toHaveTextContent('Open its chat')
     expect(screen.queryByTestId('crew-perpetual-next')).toBeNull()
   })
@@ -352,6 +363,30 @@ describe('CrewPerpetualSection', () => {
     expect(await screen.findByTestId('crew-perpetual-load-error')).toBeTruthy()
     expect(screen.queryByTestId('crew-perpetual-switch')).toBeNull()
     expect(screen.queryByTestId('crew-perpetual-reason')).toBeNull()
+    // No agent hand-off on a read failure either: the way out is the retry.
+    expect(screen.getByTestId('crew-perpetual-load-error').querySelector('button')).toBeNull()
+    expect(screen.getByTestId('crew-perpetual-load-retry')).toHaveTextContent('Try again')
+  })
+
+  it('the load-failure retry re-asks BOTH reads and settles on the answer', async () => {
+    // Both reads are asked once on mount; the registry fails, the roster
+    // answers. The retry must refetch the roster too -- the reading is
+    // assembled from both, and the roster row could be as stale as the
+    // registry read was unlucky.
+    H.autonudgeList.mockRejectedValueOnce(new Error('boom')).mockResolvedValue({ enabled: true, loops: [LOOP] })
+    wrap(<CrewPerpetualSection crew="Radar" />)
+    await screen.findByTestId('crew-perpetual-load-error')
+    expect(H.autonudgeList).toHaveBeenCalledTimes(1)
+    expect(H.members).toHaveBeenCalledTimes(1)
+
+    fireEvent.click(screen.getByTestId('crew-perpetual-load-retry'))
+    await waitFor(() => expect(H.autonudgeList).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(H.members.mock.calls.length).toBeGreaterThanOrEqual(2))
+    // The second answer replaces the notice with the reading, no reload needed.
+    await waitFor(() => expect(switchEl().getAttribute('aria-checked')).toBe('true'))
+    expect(screen.queryByTestId('crew-perpetual-load-error')).toBeNull()
+    expect(screen.queryByTestId('crew-perpetual-load-retry')).toBeNull()
+    expect(screen.getByTestId('crew-perpetual-status').getAttribute('data-state')).toBe('on')
   })
 
   it('a gateway with no nudge service withholds the switch and says so, never "never been turned on"', async () => {

@@ -455,11 +455,12 @@ async def api_members(request: web.Request) -> web.Response:
     # Perpetual mode reads the live registry in memory per row. Admission is
     # one sealed-file snapshot for the whole roster, offloaded once; per-row
     # checks stay O(1) and do no IO. The roster and team view read it as --
-    # "on" while a loop on its own thread is active, "off" while a loop
-    # record is paused or lacks admission (reason lives on the detail page),
-    # "none" when nothing was ever armed. A structured monitor is not the
-    # switch's loop and reads as "none". Absent service (KIROCREW_AUTONUDGE
-    # unset) reads "none" for every row.
+    # "on" while an uncapped owner loop on its own thread is active, "off"
+    # while a loop record is paused or lacks admission (reason lives on the
+    # detail page), "none" when nothing was ever armed. A structured monitor,
+    # a self-arm, or an active loop still carrying a cycle or runtime cap is
+    # not the owner's Perpetual mode and reads as "none". Absent service
+    # (KIROCREW_AUTONUDGE unset) reads "none" for every row.
     from kiro_crew.autonudge_selfarm import recorded_arm_parties
 
     nudge_svc = _autonudge_instance()
@@ -807,17 +808,25 @@ def perpetual_state_of(
 ) -> str:
     """The roster's reading of one crewmate's Perpetual mode: on / off / none.
 
-    ``on`` = a loop on the crewmate's own thread is active AND its sealed
-    record admits it. The switch reads ON for an admitted active finite loop
-    too -- "on" is "waking on its own", not "uncapped"; the detail page shows
-    that loop's wake count against its cap. ``off`` = a loop record is paused,
-    OR it is active but its trusted admission was retired, quarantined or lost
-    after key rotation. That second shape must be visible as OFF because the
-    fire guard refuses every wake. ``none`` = no loop record, a structured
-    monitor (which the switch never converts), no bound thread, or no service.
+    ``on`` = an UNCAPPED loop on the crewmate's own thread is active AND its
+    sealed record names the owner. ``off`` = a loop record is paused, OR it is
+    active and uncapped but its trusted admission was retired, quarantined or
+    lost after key rotation. That second shape must be visible as OFF because
+    the fire guard refuses every wake. ``none`` = no loop record, a structured
+    monitor (which the switch never converts), no bound thread, no service, a
+    self-arm, OR an active loop that still carries a cap (``max_cycles > 0``
+    or ``max_runtime_secs > 0``). A capped loop is a finite monitor, not
+    Perpetual mode: it reads ``none`` BEFORE its arm party is consulted. An
+    uncapped self-arm also reads ``none`` so the ON route
+    (``_takeover_active_loop``) can take owner admission; finite takeovers also
+    clear both caps.
     """
     from kiro_crew.autonudge import is_structured_monitor_loop
-    from kiro_crew.autonudge_selfarm import read_arm_party_strict
+    from kiro_crew.autonudge_selfarm import (
+        ARMED_BY_OWNER,
+        ARMED_BY_SELF,
+        read_arm_party_strict,
+    )
 
     if svc is None or not slot_key:
         return "none"
@@ -826,6 +835,10 @@ def perpetual_state_of(
         return "none"
     if not loop.active:
         return "off"
+    max_cycles = int(getattr(loop, "max_cycles", 0) or 0)
+    max_runtime_secs = int(getattr(loop, "max_runtime_secs", 0) or 0)
+    if max_cycles > 0 or max_runtime_secs > 0:
+        return "none"
     if arm_parties is not None:
         party = arm_parties.get((str(loop.id), slot_key), "")
     else:
@@ -833,7 +846,11 @@ def perpetual_state_of(
             party = read_arm_party_strict(loop.id, slot_key)
         except OSError:
             return "off"
-    return "on" if party else "off"
+    if party == ARMED_BY_OWNER:
+        return "on"
+    if party == ARMED_BY_SELF:
+        return "none"
+    return "off"
 
 
 def _member_thread_slot(cfg, member: str, slug: str) -> tuple[str, str]:
@@ -1973,10 +1990,11 @@ async def api_member_perpetual_set(request: web.Request) -> web.Response:
     takeover rules below.
     ON with a stopped loop: resume THAT loop and lift its caps to unlimited,
     keeping its cycle accounting and its instruction.
-    ON with an active finite self-arm: emit the critical start audit, take
-    owner admission and clear both caps. An unlimited self-arm stays self-owned;
-    a missing admission is repaired, and a finite owner arm has both caps
-    cleared. Audit, trust-write or cap-update failure: 503 or its update status.
+    ON with an active self-arm: emit the critical start audit and take owner
+    admission. A finite self-arm also has both caps cleared; an uncapped one
+    changes only its owner admission. A missing admission is repaired, and a
+    finite owner arm has both caps cleared. Audit, trust-write or cap-update
+    failure: 503 or its update status.
     OFF: deactivate the loop (``active=False``). The record stays, with its
     ``manual`` stop reason, so the drawer keeps saying why; the pending wake is
     cancelled by the service and no queued wake can revive it (the timer and
@@ -2276,12 +2294,14 @@ async def _restore_owner_loop_after_revoke_failure(
 
 async def _revoke_or_restore_owner_off(
     svc: Any, loop_id: str, slot_key: str, *, caller: str
-) -> tuple[bool, Any | None]:
+) -> tuple[bool, Any | None, bool]:
     """Strict revoke of the entry OFF just paused; on refusal, roll the pause back.
 
-    ``(revoked, restored)``: ``(True, None)`` when the entry is gone;
-    ``(False, loop)`` when the revoke was refused and the loop is active again;
-    ``(False, None)`` when the revoke was refused AND the restore did not land
+    ``(revoked, restored, pending_grant)``: ``(True, None, False)`` when the
+    entry is gone; ``(False, loop, False)`` when the revoke was refused and the
+    loop is active again; ``(False, None, True)`` when a pending owner grant
+    keeps the row paused; ``(False, None, False)`` when the revoke was refused
+    AND the restore did not land
     (the row is paused with the entry standing -- the owner's next OFF retries
     the revoke on the already-paused path). Cancellation joins the revoke
     thread, then runs the same rollback if the revoke did not succeed, before
@@ -2296,7 +2316,11 @@ async def _revoke_or_restore_owner_off(
     this slot's under this id" -- the OFF is complete for this slot.
     """
     from kiro_crew.autonudge_authz import _settle_after_cancel
-    from kiro_crew.autonudge_selfarm import await_thread_to_completion, revoke_arm_if_slot
+    from kiro_crew.autonudge_selfarm import (
+        OwnerArmGrantInProgress,
+        await_thread_to_completion,
+        revoke_arm_if_slot,
+    )
 
     revocation = asyncio.ensure_future(
         await_thread_to_completion(revoke_arm_if_slot, loop_id, slot_key)
@@ -2305,7 +2329,14 @@ async def _revoke_or_restore_owner_off(
         await asyncio.shield(revocation)
     except asyncio.CancelledError:
         await _settle_after_cancel(revocation)
-        if revocation.cancelled() or revocation.exception() is not None:
+        failure = None if revocation.cancelled() else revocation.exception()
+        if isinstance(failure, OwnerArmGrantInProgress):
+            logger.warning(
+                "owner grant remained pending during a cancelled OFF of loop %s; "
+                "keeping the loop paused",
+                loop_id,
+            )
+        elif revocation.cancelled() or failure is not None:
             logger.error(
                 "owner-arm record could not be revoked during a cancelled OFF of loop %s; "
                 "restoring the loop",
@@ -2314,14 +2345,24 @@ async def _revoke_or_restore_owner_off(
             if await _restore_owner_loop_after_revoke_failure(svc, loop_id, caller=caller) is None:
                 logger.error("cancelled OFF left owner-armed loop %s paused", loop_id)
         raise
+    except OwnerArmGrantInProgress:
+        logger.warning(
+            "owner grant remains pending on OFF of loop %s; keeping the loop paused",
+            loop_id,
+        )
+        return False, None, True
     except OSError:
         logger.error(
             "owner-arm record could not be revoked on OFF of loop %s; restoring the loop",
             loop_id,
             exc_info=True,
         )
-        return False, await _restore_owner_loop_after_revoke_failure(svc, loop_id, caller=caller)
-    return True, None
+        return (
+            False,
+            await _restore_owner_loop_after_revoke_failure(svc, loop_id, caller=caller),
+            False,
+        )
+    return True, None, False
 
 
 async def _perpetual_mutation(
@@ -2472,10 +2513,17 @@ async def _perpetual_mutation(
                 # rollback itself fails is the row left paused -- said so, with
                 # the entry still standing; the owner's next OFF meets it on the
                 # already-paused path below and retries the revoke.
-                revoked, restored = await _revoke_or_restore_owner_off(
+                revoked, restored, pending_grant = await _revoke_or_restore_owner_off(
                     svc, existing.id, slot_key, caller=caller
                 )
                 if not revoked:
+                    if pending_grant:
+                        return _perpetual_error(
+                            "Perpetual mode is paused while its pending owner takeover "
+                            "settles -- turn it off again to retry the revoke",
+                            "perpetual_off_failed",
+                            503,
+                        )
                     if restored is not None:
                         return _perpetual_error(
                             "Perpetual mode was not turned off: its authorization could not "
@@ -2698,9 +2746,11 @@ async def _settle_takeover_or_pause(svc: Any, takeover: Any, *, caller: str) -> 
     from kiro_crew.autonudge_authz import authorize_and_update_nudge
     from kiro_crew.autonudge_selfarm import (
         await_thread_to_completion,
+        recover_owner_arm_takeover,
         settle_owner_arm_takeover,
     )
 
+    settle_write_failed = False
     try:
         settled = await await_thread_to_completion(settle_owner_arm_takeover, takeover, commit=True)
     except OSError:
@@ -2711,6 +2761,7 @@ async def _settle_takeover_or_pause(svc: Any, takeover: Any, *, caller: str) -> 
             exc_info=True,
         )
         settled = False
+        settle_write_failed = True
     if settled:
         return True
     try:
@@ -2723,6 +2774,33 @@ async def _settle_takeover_or_pause(svc: Any, takeover: Any, *, caller: str) -> 
         )
         if paused is None or error is not None:
             logger.error("owner takeover rollback could not pause %s: %s", takeover.loop_id, error)
+        elif settle_write_failed:
+            accepted_row = (
+                str(paused.slot_key),
+                "",
+                bool(paused.active),
+                int(getattr(paused, "max_cycles", 0) or 0),
+                int(getattr(paused, "max_runtime_secs", 0) or 0),
+            )
+            try:
+                recovered = await await_thread_to_completion(
+                    recover_owner_arm_takeover,
+                    takeover,
+                    accepted_row,
+                )
+            except OSError:
+                logger.error(
+                    "paused owner takeover fence for %s could not be recovered; "
+                    "startup recovery remains fail-closed",
+                    takeover.loop_id,
+                    exc_info=True,
+                )
+            else:
+                if not recovered:
+                    logger.error(
+                        "paused owner takeover fence for %s changed before recovery",
+                        takeover.loop_id,
+                    )
     except Exception:  # noqa: BLE001 - the pending fence still denies fire-time admission
         logger.error("owner takeover rollback could not pause %s", takeover.loop_id, exc_info=True)
     return False
@@ -2733,7 +2811,7 @@ async def _takeover_active_loop(
 ) -> tuple[Any | None, str | None, int]:
     """Take owner control of an active loop without losing its prior party.
 
-    A healthy unlimited self-arm stays self-owned. A finite self-arm, an
+    An owner arm that is already unlimited stays unchanged. Any self-arm, an
     unrecorded active loop, or a finite owner arm becomes an unlimited owner
     arm. The trust rewrite is token-keyed and rolls back when the cap update
     fails or is cancelled before both zero caps reach the store.
@@ -2744,7 +2822,6 @@ async def _takeover_active_loop(
     )
     from kiro_crew.autonudge_selfarm import (
         ARMED_BY_OWNER,
-        ARMED_BY_SELF,
         OwnerArmRevocation,
         await_thread_to_completion,
         begin_owner_arm_takeover,
@@ -2762,7 +2839,7 @@ async def _takeover_active_loop(
     max_cycles = int(getattr(existing, "max_cycles", 0) or 0)
     max_runtime_secs = int(getattr(existing, "max_runtime_secs", 0) or 0)
     finite = max_cycles > 0 or max_runtime_secs > 0
-    if previous_party in (ARMED_BY_SELF, ARMED_BY_OWNER) and not finite:
+    if previous_party == ARMED_BY_OWNER and not finite:
         return existing, None, 200
 
     takeover = None

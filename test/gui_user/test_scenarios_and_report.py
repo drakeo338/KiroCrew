@@ -62,6 +62,7 @@ SHIPPED = SHIPPED_SMOKE | {
     "crewmate-chat-clean",
     "crewmate-create-first",
     "crewmate-panel-tabs",
+    "crewmate-perpetual-off",
     "crewmate-reply-thread",
     "crewmate-team-view",
     "knowledge-add-folder-source-and-scan",

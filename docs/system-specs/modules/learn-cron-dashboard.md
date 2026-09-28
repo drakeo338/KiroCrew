@@ -3473,7 +3473,11 @@ path at runtime resolves inside the empty stand-in — deliberately
 NOT under `trust/`, which stays sandbox read-write for the SEL appends; a record
 left at that older layout is DISCARDED, not migrated, on the gateway's first
 access — its entries may be the sandbox's — so loops armed before the upgrade
-are refused until armed again) to name this loop id on this slot — and to
+are refused until armed again. Retirement opens `trust/` relative to a pinned
+data-home directory and unlinks the record and its sibling lock relative to
+that held descriptor where the platform supports it; the Windows directory
+handle supplies the same name hold. A symlink or junction at `trust/` is
+refused and cannot redirect cleanup into the live record) to name this loop id on this slot — and to
 carry the gateway's SEAL over its entries: an HMAC under the dashboard's
 `token_signing.key` (`_seal`, domain-separated), the one gateway secret every
 shipping build already masks from the sandbox and fences from the file tools.
@@ -3548,8 +3552,10 @@ field), so a forged `self_armed` bit cannot ride an owner entry and an owner
 entry cannot satisfy the self-arm check. The fire-time guard
 (`_dashboard_mode_admits`) admits a member wake on the owner record alone —
 there is no store bit for it to agree with, and the record is the trusted
-half — and never admits it on a crew slot. Removal and replacement stage an
-owner entry in a sealed whole-record revocation envelope: the stable `loops`
+half — and never admits it on a crew slot. Member-slot removal and replacement
+stage an owner entry in a sealed whole-record revocation envelope. Ordinary
+dashboard, channel and structured-monitor removals never read this strict
+member record, so an unreadable member record cannot keep another session waking. The stable `loops`
 map is absent and the entries live under `fenced_loops`. The reviewed reader
 at `304e3b0ab` therefore treats the whole record as empty, while its strict
 writer refuses the shape instead of overwriting the fence. The current reader
@@ -3566,6 +3572,20 @@ restores the exact prior grant when the prior row remains. Request cancellation
 is retained while provider preparation, the replacement snapshot, exact
 credential activation, and owner-fence finalization (or exact rollback) are
 joined, and propagates only after `_deferred_monitor_replacements` is consumed.
+A replacement snapshot becomes durable before owner-fence finalization, but its
+timer is not armed until that trust step succeeds. A compare-and-set conflict or
+I/O failure freezes the byte-for-value replacement in the existing deferred
+replacement map: its arming and mutation guards refuse it, unrelated snapshots
+must preserve it, and the failure is reported instead of claiming success. Every legacy update and reconciler path observes the same freeze. A compare
+conflict keeps the committed row and its pre-recorded trust frozen for startup
+recovery rather than attempting compensation with a stale token. For an I/O
+failure, the service leaves its lock and rolls the committed transaction back
+through `rollback_monitor_replacement` before reporting the original error, so
+direct callers and the authorizer use the same settlement. If rollback itself
+fails, the authorizer checks the store again: a removed replacement loses its
+orphaned trust, while a still-committed replacement keeps trust fail-closed for
+startup recovery. Cancellation propagates only after that row-sensitive settlement;
+a compare conflict remains frozen even when cancellation arrived during the write.
 Self-arm admission keeps its existing post-commit cleanup contract. Semantics: ON with no loop arms
 `max_cycles=0`/`max_runtime_secs=0` (unlimited — the owner's deliberate
 choice; every finite loop armed elsewhere keeps its caps), default
@@ -3612,15 +3632,50 @@ nothing on these two paths and keep their single read of the loop (there is
 no owner party to race, so nothing to re-read for); the nudge service's own
 locks still guard its bookkeeping, and the takeover's rollback still targets
 exactly the loop id and token it captured. The roster reads ON only when an
-active loop also has a valid sealed self or owner entry; a retired, quarantined
-or key-rotated record reads OFF instead of promising wakes the fire guard will
-refuse. On the Crewmates page, explicit roster `perpetual: off` wins over a
+active UNCAPPED loop (`max_cycles == 0` and `max_runtime_secs == 0`) also has a
+valid sealed owner entry; a retired, quarantined or key-rotated record reads OFF
+instead of promising wakes the fire guard will refuse. An active self-arm reads
+NONE so the ON route can take owner admission. An active loop still carrying
+either cap also reads NONE, decided before its arm party is consulted: a finite
+loop is a monitor, not Perpetual mode, so the switch stays available and the ON
+route takes it over rather than reporting a mode the loop is not in.
+The detail page's `crew-perpetual-status` card is one persistent, stable-height
+container. React atomically replaces its single keyed ON/OFF content layer, then
+fades the incoming content from partial to full opacity. The old and new verdicts
+are never mounted together, and opacity never reaches zero, so the status box
+shows neither a mixed state nor an empty frame during a change.
+A refused press renders in both hosts through `ErrorNotice`. Every coded
+refusal's remedy is the crewmate's OWN chat (open it, stop the task there),
+and the direct link to that chat (`fact_review_chat`, `sw.chatHref` →
+`/members?member=<name>`, new tab) sits in `CrewPerpetualFacts` immediately
+above the notice in both hosts; that link owns the stop-task remedy. The two
+hosts differ on the generic agent hand-off. The crew editor / detail host
+(`CrewPerpetualSection`) omits it: `ErrorNotice`'s hand-off opens a NEW `/chat`
+and unmounts the editor, and an unsaved schedules draft may exist there, so the
+section takes no `askAgent` prop. The Crewmates drawer holds no draft, so it
+enables the generic hand-off (`askAgent`) under `ErrorNotice`'s default
+localized "Ask the agent" label; it is never relabeled "Open its chat", since
+the hand-off's new `/chat` is not this crewmate's chat and the same words on
+two different targets would name the wrong one. A read that never answered
+(`failed`) renders the `load_failed` notice, also without a hand-off, plus a
+plain retry (`load_retry`, `CrewPerpetualReading.retry`) that refetches BOTH
+the roster and the registry queries — the reading is assembled from the two,
+so retrying only the failed one would leave the other on a stale answer. The
+safe-bound-first cost copy under the switch and the Cancel semantics wording
+are catalog copy (`components.crewPerpetualSection.*`), supplied by the
+locale catalogs rather than by code.
+The frontend uses the repeating-task reason only when the roster reads NONE and
+the registry row carries the subject-free `record_kind: "structured_monitor"`
+marker. A full self-arm or capped loop may also read NONE, but it carries no
+marker and is never mislabeled as a structured monitor.
+On the Crewmates page, explicit roster `perpetual: off` wins over a
 stale active registry row for the badge, status filter and Work log block; only
 an absent field uses the legacy registry fallback. ON on an active finite
 self-arm emits the same critical `autonudge_start` audit-or-deny event as a new
 owner arm, records the owner party, and clears both caps. An unlimited self-arm
-stays self-owned. A missing admission is repaired, and a finite owner arm has
-both caps cleared through the audited update path. The token-keyed prior party
+also becomes owner-controlled but needs no cap update. A missing admission is
+repaired, and a finite owner arm has both caps cleared through the audited
+update path. The token-keyed prior party
 is restored if the update fails or cancellation settles without both caps at
 zero. ON on a STOPPED legacy loop is an
 owner TAKEOVER (`_takeover_stopped_loop`): the entry's
@@ -3640,10 +3695,13 @@ read-modify-write in the trust module (`restore_arm_party_if_token`, siblings
 preserved verbatim), awaited inside the slot lock so the lock is released only
 after the restore ran. The pending takeover commits only after that uncapped
 row is durable. If the commit loses its token or its record write raises, the
-same audited update path pauses the loop before the route returns 503; if even
-that pause fails, the still-pending fence admits nobody at fire time and startup
-recovery resolves it from the durable loop row. The same fail-closed settlement
-applies to an active-loop takeover. A cancellation of the task itself
+same audited update path pauses the loop before the route returns 503. After an
+I/O failure, a successful pause runs token-scoped in-process recovery for that
+ONE fence using the same accepted-row verdict as startup: the paused row restores
+the prior party, and sibling fences stay untouched. If the pause or that recovery
+fails, the still-pending fence admits nobody at fire time and startup recovery
+resolves it from the durable loop row. The same fail-closed settlement applies
+to an active-loop takeover. A cancellation of the task itself
 (shutdown) has two shapes: during the joined owner-entry write, BEFORE the
 resume is issued, the outcome is certain (the loop is still stopped), so the
 entry is restored to its prior party (token-keyed, joined) and then the cancel
@@ -3692,11 +3750,13 @@ one-entry map that would strand every sibling loop. ON on an active finite
 self-arm records the owner as the new arm party and clears both caps; OFF is
 `active=False` (reason `manual`, record kept, pending wake cleared, running
 turn untouched) FOLLOWED by a strict revoke of the loop's trust entry
-(`revoke_arm`; a revoke the record refuses is answered 503 with the loop
-already paused, never swallowed) -- the owner entry is the whole of an
-owner arm's fire-time admission and the loop store is agent-writable, so a
-paused record that kept it could be revived by a forged `active: true`; the
-next ON re-records it through the takeover path. The member's own
+(`revoke_arm`). A normal unreadable or unwritable record rolls OFF's pause
+back to active and answers 503, because a standing owner entry would admit an
+agent-writable revival. A pending owner-grant marker is different: it admits
+nobody, so OFF keeps the row paused and answers 503 without restoring it.
+Startup then resolves that marker against the paused row and restores its
+prior party instead of promoting the pending grant to owner. The next ON
+re-records owner admission through the takeover path. The member's own
 `autonudge_stop` on an owner-armed loop revokes the entry the same way
 (strict, the record kept for its words) — and issues its pause as its own
 task like the owner's OFF does: a turn cancelled while that shielded pause is
@@ -3734,14 +3794,17 @@ can turn it back on. The roster payload (`GET /api/members`) carries each
 member's `perpetual` reading (`on` / `off` / `none`, `perpetual_state_of`: an
 O(1) registry read per slot; a structured monitor and a never-opened thread
 both read `none`) so the roster and the team view can show a paused member
-without a second request. `on` means "a loop on this crewmate's own thread is
-active", NOT "uncapped": a finite loop the crewmate armed itself reads `on`
-while still scheduled to stop at its cap. ON pressed over that active finite
-self-arm records the owner party and clears both caps; the running turn stays
-untouched. The detail page's ON readout carries the loop's own wake
-count against its cap (`patrol_cycles_of`), which is where the coming stop
-shows; when that loop stops, the reading turns `off` with the cap reason and
-the owner's ON then lifts the caps. On a member slot the
+without a second request. `on` means "an UNCAPPED loop on this crewmate's own
+thread is active and admitted": a finite loop the crewmate armed itself
+(`max_cycles > 0` or `max_runtime_secs > 0`) reads `none` while it is active,
+because it is a monitor scheduled to stop at its cap, not Perpetual mode — and
+that answer is decided before the arm party is read, so a capped row costs no
+trust lookup. ON pressed over that active finite self-arm records the owner
+party and clears both caps; the running turn stays untouched. The detail
+page's ON readout carries the loop's wake count so far (`patrol_cycles_of`,
+shown as "Checks so far"); when a finite loop stops, the reading turns `off`
+with the cap reason and the owner's ON then resumes it and lifts the caps. On a
+member slot the
 applier's owner-arm read is tri-state and FAILS CLOSED: an unreadable or
 malformed record refuses the cap change and takes the retain-record stop
 path; non-member slots never reach the read.

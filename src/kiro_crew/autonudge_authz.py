@@ -1345,8 +1345,17 @@ async def authorize_and_add_nudge(
         if owner_credentials_grant:
             autonudge_provider_trust.forget_monitor_owner_credentials(reserved_loop_id)
 
+    def _reserved_add_committed() -> bool:
+        return bool(
+            reserved_loop_id is not None
+            and callable(getattr(svc, "get_by_id", None))
+            and svc.get_by_id(reserved_loop_id) is not None
+        )
+
     async def _forget_orphaned_trust_joined() -> None:
         nonlocal transaction_cancelled
+        if _reserved_add_committed():
+            return
         cleanup = asyncio.ensure_future(asyncio.to_thread(_forget_orphaned_trust))
         _result, cleanup_error, step_cancelled = await _await_transaction_step(cleanup)
         transaction_cancelled = transaction_cancelled or step_cancelled
@@ -1436,6 +1445,9 @@ async def authorize_and_add_nudge(
             raise asyncio.CancelledError
         return _deny("session changed before nudge arm committed", 409)
     except MonitorUpdateConflict as exc:
+        # A compare conflict means this transaction no longer owns the prior
+        # fence. Keep the committed replacement and its trust frozen for startup
+        # recovery rather than running a rollback with a stale token.
         await _forget_orphaned_trust_joined()
         if transaction_cancelled:
             raise asyncio.CancelledError
@@ -1452,12 +1464,7 @@ async def authorize_and_add_nudge(
         # abandon the wait -- and the entry is forgotten only when no loop with
         # the reserved id is in the store afterwards. Joined writes throughout.
         await _settle_after_cancel(add_fut)
-        committed = bool(
-            reserved_loop_id is not None
-            and callable(getattr(svc, "get_by_id", None))
-            and svc.get_by_id(reserved_loop_id) is not None
-        )
-        if not committed:
+        if not _reserved_add_committed():
             await await_thread_to_completion(_forget_orphaned_trust)
         raise
     except Exception as exc:  # noqa: BLE001 - audit the failure, then propagate

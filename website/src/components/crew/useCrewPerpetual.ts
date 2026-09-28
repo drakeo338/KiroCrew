@@ -159,6 +159,11 @@ export interface CrewPerpetualReading {
    *  says. `true` until the registry has answered, so a loading card never
    *  claims the mode is unavailable. */
   enabled: boolean;
+  /** Re-ask BOTH reads. The host's `failed` notice offers it: a read that
+   *  never answered is usually transient, and the reading is assembled from
+   *  two queries, so retrying only the one that failed would leave the other
+   *  on its stale answer. */
+  retry: () => void;
 }
 
 export interface CrewPerpetualOptions {
@@ -232,6 +237,8 @@ export function useCrewPerpetual(
           : "none";
   // A record the roster does not count as the switch's loop (a structured
   // monitor's reduced row) carries no readouts worth showing under the switch.
+  // Its positive marker prevents full self-arm and capped rows that also read
+  // `none` from inheriting the structured monitor's stop advice.
   const loop = state === "none" ? undefined : record;
   const rosterLoaded = roster.data !== undefined || roster.isError;
   const loopsLoaded = loops.data !== undefined || loops.isError;
@@ -249,7 +256,11 @@ export function useCrewPerpetual(
     loaded: rosterLoaded && loopsLoaded,
     failed,
     missing: roster.data !== undefined && !row,
-    monitor: state === "none" && !!record,
+    monitor: state === "none" && record?.record_kind === "structured_monitor",
     enabled: loops.data === undefined || loops.data.enabled !== false,
+    retry: () => {
+      void roster.refetch();
+      void loops.refetch();
+    },
   };
 }
