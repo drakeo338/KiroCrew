@@ -1,0 +1,167 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`CrewLogTab > draws the subagents table 1`] = `
+<table
+  class="w-full border-collapse mt-2.5"
+>
+  <thead>
+    <tr>
+      <th
+        class="text-left font-normal text-muted text-[10.5px] py-[3px] border-b border-border"
+      >
+        agent
+      </th>
+      <th
+        class="text-left font-normal text-muted text-[10.5px] py-[3px] border-b border-border"
+      >
+        model
+      </th>
+      <th
+        class="text-left font-normal text-muted text-[10.5px] py-[3px] border-b border-border"
+      >
+        outcome
+      </th>
+      <th
+        class="text-right font-normal text-muted text-[10.5px] py-[3px] border-b border-border"
+      >
+        elapsed
+      </th>
+      <th
+        class="text-right font-normal text-muted text-[10.5px] py-[3px] border-b border-border"
+      >
+        credits
+      </th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td
+        class="py-[3px] border-b border-border text-text max-w-[110px]"
+      >
+        <div
+          class="truncate"
+        >
+          kirocrew-worker
+        </div>
+        <div
+          class="text-[10px] text-muted truncate"
+        >
+          turn 11 · corrections: 1
+        </div>
+      </td>
+      <td
+        class="py-[3px] border-b border-border text-muted truncate max-w-[80px]"
+      >
+        a-model
+      </td>
+      <td
+        class="py-[3px] border-b border-border"
+      >
+        <span
+          class="inline-flex items-center px-2 py-px rounded-full text-[10.5px] font-semibold bg-accent-subtle text-accent"
+        >
+          finished
+        </span>
+      </td>
+      <td
+        class="py-[3px] border-b border-border text-right tabular-nums"
+      >
+        41s
+      </td>
+      <td
+        class="py-[3px] border-b border-border text-right tabular-nums text-muted"
+      >
+        1.75
+      </td>
+    </tr>
+    <tr>
+      <td
+        class="py-[3px] border-b border-border text-text max-w-[110px]"
+      >
+        <div
+          class="truncate"
+        >
+          kirocrew-worker
+        </div>
+        <div
+          class="text-[10px] text-muted truncate"
+        >
+          turn 12
+        </div>
+      </td>
+      <td
+        class="py-[3px] border-b border-border text-muted truncate max-w-[80px]"
+      >
+        a-model
+      </td>
+      <td
+        class="py-[3px] border-b border-border"
+      >
+        <span
+          class="inline-flex items-center px-2 py-px rounded-full text-[10.5px] font-semibold bg-bg-hover text-muted"
+        >
+          stopped
+        </span>
+      </td>
+      <td
+        class="py-[3px] border-b border-border text-right tabular-nums"
+      >
+        0.9s
+      </td>
+      <td
+        class="py-[3px] border-b border-border text-right tabular-nums text-muted"
+      >
+        not said
+      </td>
+    </tr>
+    <tr>
+      <td
+        class="pb-[3px] border-b border-border text-[10.5px] text-muted"
+        colspan="5"
+      >
+        user stopped it
+      </td>
+    </tr>
+    <tr>
+      <td
+        class="py-[3px] border-b border-border text-text max-w-[110px]"
+      >
+        <div
+          class="truncate"
+        >
+          kirocrew-knowledge
+        </div>
+        <div
+          class="text-[10px] text-muted truncate"
+        >
+          turn 12
+        </div>
+      </td>
+      <td
+        class="py-[3px] border-b border-border text-muted truncate max-w-[80px]"
+      >
+        a-model
+      </td>
+      <td
+        class="py-[3px] border-b border-border"
+      >
+        <span
+          class="inline-flex items-center px-2 py-px rounded-full text-[10.5px] font-semibold bg-warn-subtle text-warn"
+        >
+          running
+        </span>
+      </td>
+      <td
+        class="py-[3px] border-b border-border text-right tabular-nums"
+      >
+        —
+      </td>
+      <td
+        class="py-[3px] border-b border-border text-right tabular-nums text-muted"
+      >
+        not said
+      </td>
+    </tr>
+  </tbody>
+</table>
+`;

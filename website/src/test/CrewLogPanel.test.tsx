@@ -121,6 +121,37 @@ function populatedBundle(overrides: Record<string, unknown> = {}) {
         last: null,
       },
     },
+    subagents: {
+      name: 'subagents',
+      seq: 1842,
+      value: {
+        by_id: {
+          'sub-1': {
+            agent_id: 'sub-1', seq_spawned: 1200, turn: 11,
+            agent: 'kirocrew-worker', model: 'a-model',
+            outcome: 'completed', ms: 41000, credits: 1.75, reason: '', steers: 1,
+          },
+          'sub-2': {
+            agent_id: 'sub-2', seq_spawned: 1400, turn: 12,
+            agent: 'kirocrew-worker', model: 'a-model',
+            outcome: 'stopped', ms: 900, credits: null, reason: 'user stopped it', steers: 0,
+          },
+          'sub-3': {
+            agent_id: 'sub-3', seq_spawned: 1830, turn: 12,
+            agent: 'kirocrew-knowledge', model: 'a-model',
+            outcome: null, ms: 0, credits: null, reason: '', steers: 0,
+          },
+        },
+        open: ['sub-3'],
+        running: 1,
+        omitted: 0,
+        limit: 512,
+        totals: {
+          spawned: 3, completed: 1, failed: 0, stopped: 1, unknown: 0,
+          closed_unmatched: 0, steers: 1, ms: 41900, credits: 1.75, credits_reported: 1,
+        },
+      },
+    },
     ...overrides,
   }
 }
@@ -137,13 +168,14 @@ describe('CrewLogTab', () => {
     renderWithProviders(<CrewLogTab slot={SLOT} />)
     await waitFor(() => expect(screen.getByText('Status')).toBeInTheDocument())
     // Every fold has a header, whether or not its body is open.
-    for (const title of ['Status', 'Usage', 'Timeline', 'Tools', 'Approvals']) {
+    for (const title of ['Status', 'Usage', 'Timeline', 'Tools', 'Approvals', 'Subagents']) {
       expect(screen.getByText(title)).toBeInTheDocument()
     }
     // The collapsed list folds still say how much they hold.
     expect(screen.getByText('moments: 3')).toBeInTheDocument()
     expect(screen.getByText('calls: 96 · unfinished: 2')).toBeInTheDocument()
     expect(screen.getByText('asked: 4 · pending: 1')).toBeInTheDocument()
+    expect(screen.getByText('dispatched: 3 · running: 1')).toBeInTheDocument()
   })
 
   it('reports the highest fold seq as the version it folded through', async () => {
@@ -538,5 +570,77 @@ describe('CrewLogTab', () => {
     await waitFor(() => expect(button).not.toBeDisabled())
     fireEvent.click(button)
     await waitFor(() => expect(api.sessionCrewLogProjections).toHaveBeenCalledTimes(2))
+  })
+
+  it('draws the subagents table', async () => {
+    renderWithProviders(<CrewLogTab slot={SLOT} />)
+    await waitFor(() => expect(screen.getByText('Subagents')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Subagents'))
+    const table = screen.getByText('agent').closest('table')
+    expect(table).toMatchSnapshot()
+  })
+
+  it('tells a reported charge, an unreported one and a running child apart', async () => {
+    // THREE states, and the middle one is the one a panel gets wrong: a child that
+    // reported no charge must not be drawn as having cost 0.
+    renderWithProviders(<CrewLogTab slot={SLOT} />)
+    await waitFor(() => expect(screen.getByText('Subagents')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Subagents'))
+    // Addressed by POSITION, which also pins the order: the fold renders rows in the
+    // order the children were dispatched, and two of these share an agent name. Filtered
+    // to the CHILD rows -- a child that did not finish also emits a full-width reason row,
+    // which has one cell rather than five.
+    const all = [...screen.getByText('agent').closest('table')!.querySelectorAll('tbody tr')]
+    const rows = all.filter(tr => tr.querySelectorAll('td').length === 5)
+    expect(rows).toHaveLength(3)
+    // sub-2 was stopped, so its reason row is the one extra.
+    expect(all).toHaveLength(4)
+    expect(all[2].textContent).toContain('user stopped it')
+    const text = (n: number) => rows[n].textContent ?? ''
+    // sub-1 finished and reported 1.75.
+    expect(text(0)).toContain('finished')
+    expect(text(0)).toContain('1.75')
+    // sub-2 was stopped and reported nothing: said so, not zeroed.
+    expect(text(1)).toContain('stopped')
+    expect(text(1)).toContain('not said')
+    expect(text(1)).not.toMatch(/\b0\b/)
+    // The retained turn and steer count have a reader on the row itself.
+    expect(text(0)).toContain('turn 11')
+    expect(text(0)).toContain('corrections: 1')
+    // sub-3 has not closed, so it has neither an outcome nor a duration to draw --
+    // and "0.0s" would read as a child that finished instantly.
+    expect(text(2)).toContain('running')
+    expect(text(2)).toContain('not said')
+    expect(text(2)).not.toContain('0.0s')
+  })
+
+  it('does not invent a credits total when no child reported one', async () => {
+    const bundle = populatedBundle()
+    Object.assign((bundle.subagents.value as Record<string, unknown>).totals as object, {
+      credits: 0, credits_reported: 0,
+    })
+    vi.spyOn(api, 'sessionCrewLogProjections').mockResolvedValue(read(bundle))
+    renderWithProviders(<CrewLogTab slot={SLOT} />)
+    await waitFor(() => expect(screen.getByText('Subagents')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Subagents'))
+    const tile = screen.getByText('credits, all subagents').parentElement
+    expect(tile?.textContent).toContain('—')
+  })
+
+  it('says how many dispatches are not in the table, and how many closers matched none', async () => {
+    const bundle = populatedBundle()
+    const value = bundle.subagents.value as Record<string, unknown>
+    // A session past the retention cap: `spawned` exceeds the rows by `omitted`, on
+    // purpose, and a closer landed with no row to put it on.
+    Object.assign(value, { omitted: 9, running: 10 })
+    Object.assign(value.totals as object, { spawned: 12, closed_unmatched: 2 })
+    vi.spyOn(api, 'sessionCrewLogProjections').mockResolvedValue(read(bundle))
+    renderWithProviders(<CrewLogTab slot={SLOT} />)
+    await waitFor(() => expect(screen.getByText('Subagents')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Subagents'))
+    expect(screen.getByText('subagents not detailed: 9')).toBeInTheDocument()
+    expect(screen.getByText('2 more finished, but this list does not have their start')).toBeInTheDocument()
+    // And the header reports every dispatch, not the row count.
+    expect(screen.getByText('dispatched: 12 · running: 10')).toBeInTheDocument()
   })
 })

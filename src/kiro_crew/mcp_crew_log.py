@@ -96,7 +96,14 @@ TOOLS: tuple[str, ...] = ("crew_log_list", "crew_log_read", "crew_log_projection
 #: description lists them without importing the storage package into this process.
 #: A name this list is missing is refused by the ENDPOINT, which reads the real
 #: ``PROJECTION_NAMES``; a test pins the two together.
-PROJECTION_NAMES: tuple[str, ...] = ("status", "usage", "timeline", "tools", "approvals")
+PROJECTION_NAMES: tuple[str, ...] = (
+    "status",
+    "usage",
+    "timeline",
+    "tools",
+    "approvals",
+    "subagents",
+)
 
 #: Entries one ``crew_log_read`` returns, whatever a caller asks for. The endpoint
 #: clamps its own span too; this is the tool's promise to its caller.

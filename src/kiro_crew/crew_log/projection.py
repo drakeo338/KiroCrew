@@ -144,6 +144,7 @@ PROJECTION_NAMES: Final[tuple[str, ...]] = (
     "timeline",
     "tools",
     "approvals",
+    "subagents",
 )
 
 #: Folds this module registers but does NOT advertise: no panel draws them and the
@@ -1887,6 +1888,234 @@ def _approvals_render(state: dict[str, Any]) -> dict[str, Any]:
         "unmatched_decisions": state["unmatched_decisions"],
         "by_decision": dict(sorted(state["by_decision"].items())),
         "last": dict(state["last"]) if state["last"] else None,
+    }
+
+
+# --------------------------------------------------------------------------- #
+# subagents
+# --------------------------------------------------------------------------- #
+#
+# WHAT THIS FOLD IS FOR. "Which children did this session dispatch, and for each one
+# what happened, how long it ran and what it cost" -- answered from one savepoint read
+# rather than from a 200-entry ``timeline`` window that happens to have swallowed the
+# four ``subagent/*`` types along with everything else.
+#
+# The same number lives in five places besides this one -- the runtime accumulator, the
+# terminal tombstone, the persistence record, the WS frame and its replay, and the
+# browser store -- and keeping those five agreeing is where a reader's numbers go wrong.
+# This fold is the one that is DERIVED from the log, so it cannot disagree with the
+# record without the record itself being wrong.
+
+
+#: Outcomes this fold counts under their own name. ``subagent/failed`` carries an OPEN
+#: enum, deliberately: the value is the subagent runtime's own, and enforcing the set
+#: would turn "the upstream vocabulary grew" into a lost record. So a closer whose
+#: outcome is not one of these lands in ``unknown``, which is what the declaration
+#: already means by it -- the row keeps the literal string, so the fact is not lost at
+#: the level that can hold it.
+_SUBAGENT_OUTCOMES: Final[frozenset[str]] = frozenset({"completed", "failed", "stopped", "unknown"})
+
+#: Entry types ``subagents`` reads: one opener, one event, two closers.
+SUBAGENT_TYPES: Final[frozenset[str]] = frozenset(
+    {
+        "subagent/spawned",
+        "subagent/steered",
+        "subagent/completed",
+        "subagent/failed",
+    }
+)
+
+
+def _subagents_start() -> dict[str, Any]:
+    return {
+        "by_id": {},
+        "open": [],
+        # Dispatches this fold did NOT retain, because ``by_id`` was at its cap.
+        "omitted": 0,
+        "totals": {
+            # EVERY dispatch, including the ones ``omitted`` counts. See
+            # ``_subagents_render`` for why the two are allowed to disagree.
+            "spawned": 0,
+            "completed": 0,
+            "failed": 0,
+            "stopped": 0,
+            "unknown": 0,
+            # Closers that found no row. Without this, a session whose totals exceed
+            # what its rows account for reads as an arithmetic bug.
+            "closed_unmatched": 0,
+            "steers": 0,
+            "ms": 0,
+            "credits": 0.0,
+            # How many closers REPORTED a cost, so a zero total is legible as "nobody
+            # said" rather than as "it cost nothing". Same posture as ``usage``.
+            "credits_reported": 0,
+        },
+    }
+
+
+def _subagent_credits(value: Any) -> float | None:
+    """*value* as a credit charge, or ``None`` when no charge was reported.
+
+    Absent is NOT zero: a child that was never billed and a child that cost nothing
+    are different facts, and only one of them is a measurement. ``bool`` is excluded
+    explicitly because it is an ``int`` in Python, so a check that forgot would bill
+    ``True`` as one credit.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        charge = float(value)
+    except (OverflowError, ValueError):
+        # An ``int`` has no magnitude limit in Python but a ``float`` does, so a line
+        # carrying an integer past ~1.8e308 passes the type check above and then raises
+        # here. That line stays on disk and nothing rewrites it, so letting the raise
+        # through would turn EVERY read of this session's fold into a crash, for good --
+        # the same reasoning ``_ledger_iso`` gives for catching its own overflow.
+        return None
+    # A negative or non-finite charge is not a cost anything could have incurred, and
+    # adding one would make the session total unreadable rather than merely wrong.
+    if charge < 0 or charge != charge or charge in (float("inf"), float("-inf")):
+        return None
+    return charge
+
+
+def _subagents_step(state: dict[str, Any], entry: Entry) -> None:
+    data = entry.data
+    agent_id = _as_id(data.get("agent_id"))
+    rows: dict[str, Any] = state["by_id"]
+    totals: dict[str, Any] = state["totals"]
+
+    if entry.type == "subagent/spawned":
+        # Counted BEFORE the cap is consulted: this is how many children the session
+        # dispatched, which is a fact about the session rather than about how many rows
+        # this fold chose to keep.
+        totals["spawned"] += 1
+        # An empty or over-long id identifies nothing, so keying a row by it would make
+        # every such child the same child and let one closer close another's row. It is
+        # counted above and left unretained, the same path a dispatch past the cap takes.
+        if not agent_id or agent_id in rows:
+            if not agent_id:
+                state["omitted"] += 1
+            return
+        if len(rows) >= OPEN_RETAIN_LIMIT:
+            # The bound this module holds everywhere: a session that dispatched more
+            # children than the cap keeps its totals exact and stops growing the state.
+            state["omitted"] += 1
+            return
+        rows[agent_id] = {
+            "agent_id": agent_id,
+            # Retained because ``render`` orders the rows by it. Deliberately the SEQ and
+            # not the time: two children dispatched in one millisecond tie on a clock, and
+            # a seq is what the log guarantees is ordered.
+            "seq_spawned": entry.seq,
+            "turn": _as_int(data.get("turn")),
+            "agent": _as_str(data.get("agent")),
+            "model": _as_str(data.get("model")),
+            "outcome": None,
+            "ms": 0,
+            "credits": None,
+            "reason": "",
+            "steers": 0,
+        }
+        state["open"].append(agent_id)
+        return
+
+    if entry.type == "subagent/steered":
+        # Counted whether or not it lands: a steer naming a child whose dispatch fell
+        # past the cap still happened, and the session-wide count is the one place that
+        # can say so.
+        totals["steers"] += 1
+        row = rows.get(agent_id) if agent_id else None
+        if row is not None:
+            row["steers"] += 1
+        return
+
+    # A closer, and the type is matched EXPLICITLY rather than reached by falling through
+    # the two branches above. ``affects`` spares this fold the entries it does not read,
+    # but only on the kernel's path (:class:`_SessionFold`): :func:`advance` and
+    # :func:`fold` call ``step`` for every entry in the file, so a fall-through ``else``
+    # here would bill every ``turn/completed`` in the log as a child that closed.
+    if entry.type not in ("subagent/completed", "subagent/failed"):
+        return
+    if entry.type == "subagent/completed":
+        outcome = "completed"
+    else:
+        outcome = _as_str(data.get("outcome")) or "unknown"
+    counted = outcome if outcome in _SUBAGENT_OUTCOMES else "unknown"
+    ms = _as_int(data.get("ms"))
+    credits = _subagent_credits(data.get("credits"))
+
+    # The totals move for EVERY closer, row or no row. crash-repair closes a child
+    # across the whole file, so a closer routinely names a dispatch this fold omitted --
+    # and dropping it would under-report what the session actually ran and spent, which
+    # is the one number a reader comes here for.
+    totals[counted] += 1
+    totals["ms"] += ms
+    if credits is not None:
+        totals["credits"] += credits
+        totals["credits_reported"] += 1
+
+    row = rows.get(agent_id) if agent_id else None
+    if row is None:
+        totals["closed_unmatched"] += 1
+        return
+    row["outcome"] = outcome
+    row["ms"] = ms
+    row["credits"] = credits
+    row["reason"] = _as_str(data.get("reason"))
+    if agent_id in state["open"]:
+        state["open"].remove(agent_id)
+
+
+def _subagents_render(state: dict[str, Any]) -> dict[str, Any]:
+    """The children this session dispatched, in dispatch order.
+
+    ``totals["spawned"]`` and ``by_id`` are allowed to DISAGREE, and ``omitted`` is
+    what reconciles them: ``spawned == len(by_id) + omitted``. A reader that wants to
+    know what the session did reads the total; one that wants per-child detail reads the
+    rows and is told, by a non-zero ``omitted``, that it is holding a window rather than
+    the whole list. Reporting only the retained count would silently shrink a long
+    session's history to the cap and look exact.
+
+    ``credits`` on a row is ``None`` when that child reported no charge, never ``0``.
+    A surface drawing this has three states to draw, not two: a number, "no charge was
+    reported", and a child that has not closed yet.
+
+    ``running`` is the EXACT number still open and ``open`` is only the retained subset of
+    it. They differ once the cap has dropped a dispatch, because a dropped child has no row
+    to be absent an outcome from -- so a reader counting ``open`` would report a session
+    with 600 children in flight as having 512, or fewer. ``running`` is derived from the
+    totals instead (dispatches minus closers), which retention never touches, and is
+    floored at 0 so a log holding more closers than openers reads as none running rather
+    than as a negative count.
+    """
+    rows = sorted(state["by_id"].values(), key=lambda row: row["seq_spawned"])
+    totals = dict(state["totals"])
+    totals["credits"] = round(totals["credits"], 6)
+    closed = sum(totals[outcome] for outcome in sorted(_SUBAGENT_OUTCOMES))
+    return {
+        "by_id": {
+            row["agent_id"]: {
+                "agent_id": row["agent_id"],
+                "seq_spawned": row["seq_spawned"],
+                "turn": row["turn"],
+                "agent": row["agent"],
+                "model": row["model"],
+                "outcome": row["outcome"],
+                "ms": row["ms"],
+                "credits": row["credits"],
+                "reason": row["reason"],
+                "steers": row["steers"],
+            }
+            for row in rows
+        },
+        # The retained children with no closer yet, oldest first -- the same order the rows
+        # are in. A SUBSET of ``running``; see the docstring.
+        "open": [row["agent_id"] for row in rows if row["outcome"] is None],
+        "running": max(0, totals["spawned"] - closed),
+        "omitted": state["omitted"],
+        "limit": OPEN_RETAIN_LIMIT,
+        "totals": totals,
     }
 
 
@@ -4483,6 +4712,21 @@ def _approvals_copy(state: dict[str, Any]) -> dict[str, Any]:
     return grown
 
 
+def _subagents_copy(state: dict[str, Any]) -> dict[str, Any]:
+    """A per-child row is filled in by its closer, and ``open`` gains and loses ids.
+
+    Three containers the step reaches: the row dict for the child a closer names, the
+    ``open`` list, and the ``totals`` dict every branch increments. ``scope`` is written
+    once at spawn and replaced whole, never edited, so the row's shallow copy covers it.
+    Bounded by ``OPEN_RETAIN_LIMIT`` rows of fixed width.
+    """
+    grown = dict(state)
+    grown["by_id"] = {agent_id: dict(row) for agent_id, row in state["by_id"].items()}
+    grown["open"] = list(state["open"])
+    grown["totals"] = dict(state["totals"])
+    return grown
+
+
 _FOLDS: Final[dict[str, _Fold]] = {
     # ``affects=None``: every entry moves these two. ``status`` counts entries and
     # keeps the newest time, and ``class`` records the seq it saw so a gap in the
@@ -4524,6 +4768,18 @@ _FOLDS: Final[dict[str, _Fold]] = {
         _approvals_render,
         affects=APPROVAL_TYPES,
         copy_state=_approvals_copy,
+    ),
+    # LAZY, and the reason is not this fold's own: eager folding continues the warm SLOT
+    # memo, and this fold is keyed by one SESSION. See the import-time rule below
+    # (``EAGER_FOLD_NAMES <= SLOT_PROJECTION_NAMES``). A reader asks for this one when it
+    # draws the panel, which is a read per turn rather than a read on a timer.
+    "subagents": _Fold(
+        "subagents",
+        _subagents_start,
+        _subagents_step,
+        _subagents_render,
+        affects=SUBAGENT_TYPES,
+        copy_state=_subagents_copy,
     ),
     "class": _Fold("class", _class_start, _class_step, _class_render, copy_state=_flat_copy),
     # The SLOT-keyed folds each answer to exactly ONE entry type -- their ``step``

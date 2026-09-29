@@ -25,7 +25,7 @@
  * footer reports the highest of the five, which is what makes "this value is
  * older than the log" observable instead of implied.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { AlertTriangle, ChevronDown, ChevronRight, RefreshCw } from 'lucide-react'
 import { api } from '../../api/client'
@@ -37,7 +37,7 @@ import { fmtCompact, fmtElapsed, fmtNumber, fmtPercent, fmtTimeNumeric } from '.
 import { splitOnPlaceholder } from '../../lib/splitOnPlaceholder'
 
 /** The five folds, in the order the backend declares them (`PROJECTION_NAMES`). */
-export const CREW_LOG_FOLDS = ['status', 'usage', 'timeline', 'tools', 'approvals'] as const
+export const CREW_LOG_FOLDS = ['status', 'usage', 'timeline', 'tools', 'approvals', 'subagents'] as const
 export type CrewLogFold = (typeof CREW_LOG_FOLDS)[number]
 
 /** One fold's value at the seq it was folded through. */
@@ -555,6 +555,135 @@ function ApprovalsBody({ value }: { value: Record<string, unknown> }) {
   )
 }
 
+function outcomeLabel(outcome: string): string {
+  const key = `pages.chat.crewLog.outcome_${outcome}`
+  const label = i18nT(key)
+  // An OPEN enum: the fold passes the runtime's own word through rather than clamping
+  // it, so a value this build has no wording for is drawn as itself instead of as a
+  // missing translation key.
+  return label === key ? outcome : label
+}
+
+function SubagentsBody({ value }: { value: Record<string, unknown> }) {
+  const byId = obj(value.by_id)
+  const children = Object.entries(byId)
+  const rows = children.slice(0, TABLE_ROWS)
+  const totals = obj(value.totals)
+  // `omitted` counts dispatches the fold never retained, so they are in neither this
+  // table nor `by_id`. A reader asking "is that all of them" is owed those too.
+  const hidden = notShown(children.length, rows.length, int(value.omitted))
+  if (int(totals.spawned) === 0) {
+    return <div className="text-[11.5px] text-muted py-1">{i18nT('pages.chat.crewLog.subagents_empty')}</div>
+  }
+  return (
+    <>
+      <div className="grid grid-cols-2 gap-1.5">
+        <Stat value={count(totals.spawned)} label={i18nT('pages.chat.crewLog.stat_spawned')} />
+        <Stat
+          // The same rule the usage tiles follow: a total nobody measured is a dash,
+          // not a zero. No child reporting a charge is not the session spending nothing.
+          value={int(totals.credits_reported) === 0
+            ? '—'
+            : fmtNumber(num(totals.credits) ?? 0, { maximumFractionDigits: 2 })}
+          // Its OWN key, not the usage tile's `stat_credits`: that one reads "across
+          // {{turns}} turns" and would name a unit this fold does not count in.
+          label={i18nT('pages.chat.crewLog.stat_subagent_credits')}
+          // Two credit numbers on one panel and no stated relationship is a question
+          // about MONEY that a reader cannot answer by looking. Usage bills subagent
+          // closers in its own total, so this figure is a SUBSET of it, and the hint is
+          // where that is said -- the same dotted-underline affordance the Usage tiles use.
+          hint={i18nT('pages.chat.crewLog.subagent_credits_hint')}
+        />
+      </div>
+      <table className="w-full border-collapse mt-2.5">
+        <thead>
+          <tr>
+            <th className="text-left font-normal text-muted text-[10.5px] py-[3px] border-b border-border">{i18nT('pages.chat.crewLog.col_agent')}</th>
+            <th className="text-left font-normal text-muted text-[10.5px] py-[3px] border-b border-border">{i18nT('pages.chat.crewLog.col_model')}</th>
+            <th className="text-left font-normal text-muted text-[10.5px] py-[3px] border-b border-border">{i18nT('pages.chat.crewLog.col_outcome')}</th>
+            <th className="text-right font-normal text-muted text-[10.5px] py-[3px] border-b border-border">{i18nT('pages.chat.crewLog.col_elapsed')}</th>
+            <th className="text-right font-normal text-muted text-[10.5px] py-[3px] border-b border-border">{i18nT('pages.chat.crewLog.col_credits')}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map(([agentId, raw]) => {
+            const row = obj(raw)
+            const outcome = str(row.outcome)
+            const charge = num(row.credits)
+            const reason = str(row.reason)
+            const steers = int(row.steers)
+            const turn = int(row.turn)
+            // Under the name: which turn asked, and how many corrections were sent in.
+            // Kept SHORT because this cell is the narrow one -- the reason gets its own
+            // full-width row below, where it can be read rather than truncated.
+            const detail = [
+              // Turns are numbered from one, so a 0 names a turn that never existed: it is
+              // what the fold stores when no turn asked (a cron, a hook, a slash command).
+              turn > 0 ? i18nT('pages.chat.crewLog.subagent_from_turn', { turn: fmtNumber(turn) }) : '',
+              steers > 0 ? i18nT('pages.chat.crewLog.subagent_steers', { count: fmtNumber(steers) }) : '',
+            ].filter(Boolean).join(' · ')
+            return (
+              <Fragment key={agentId}>
+              <tr>
+                <td className="py-[3px] border-b border-border text-text max-w-[110px]">
+                  <div className="truncate">{str(row.agent) || agentId}</div>
+                  {detail && <div className="text-[10px] text-muted truncate">{detail}</div>}
+                </td>
+                <td className="py-[3px] border-b border-border text-muted truncate max-w-[80px]">{str(row.model) || '—'}</td>
+                <td className="py-[3px] border-b border-border">
+                  {outcome
+                    ? <Pill tone={outcome === 'completed' ? 'accent' : outcome === 'stopped' ? 'muted' : 'danger'}>{outcomeLabel(outcome)}</Pill>
+                    : <Pill tone="warn">{i18nT('pages.chat.crewLog.outcome_running')}</Pill>}
+                </td>
+                {/* A duration is written by the CLOSER, so a child still running has
+                    none here -- and "0.0s" would read as a child that finished
+                    instantly. The live timer for a running child is the card's job,
+                    not this fold's. */}
+                <td className="py-[3px] border-b border-border text-right tabular-nums">
+                  {outcome ? fmtElapsed(int(row.ms)) : '—'}
+                </td>
+                {/* THREE states, not two: a charge, a child that reported none, and a
+                    child still running. An absent charge is drawn as "not said" rather
+                    than as 0 -- the fold stores null for it precisely so this cell can
+                    tell them apart. */}
+                <td className="py-[3px] border-b border-border text-right tabular-nums text-muted">
+                  {charge === null
+                    ? i18nT('pages.chat.crewLog.credits_not_said')
+                    : fmtNumber(charge, { maximumFractionDigits: 2 })}
+                </td>
+              </tr>
+              {/* The closer's own reason, on its own full-width row so it can be READ.
+                  Only a child that did not finish carries one, so this row is the
+                  exception rather than a second line under every child. */}
+              {reason && (
+                <tr>
+                  <td colSpan={5} className="pb-[3px] border-b border-border text-[10.5px] text-muted">
+                    {reason}
+                  </td>
+                </tr>
+              )}
+              </Fragment>
+            )
+          })}
+        </tbody>
+      </table>
+      <NotShown
+        n={hidden}
+        line={i18nT('pages.chat.crewLog.subagents_omitted', { count: fmtNumber(hidden) })}
+      />
+      {int(totals.closed_unmatched) > 0 && (
+        // A closer whose dispatch this fold never retained still billed into the
+        // totals above, which is why they can exceed what the table accounts for.
+        <div className="text-[10.5px] text-muted pt-1.5">
+          {i18nT('pages.chat.crewLog.subagents_unmatched', {
+            count: fmtNumber(int(totals.closed_unmatched)),
+          })}
+        </div>
+      )}
+    </>
+  )
+}
+
 /* ── summaries drawn in a collapsed header ────────────────────────────────── */
 
 function summaryFor(fold: CrewLogFold, value: Record<string, unknown>): string {
@@ -587,9 +716,20 @@ function summaryFor(fold: CrewLogFold, value: Record<string, unknown>): string {
       open: fmtNumber(int(value.open)),
     })
   }
-  return i18nT('pages.chat.crewLog.summary_approvals', {
-    requested: fmtNumber(int(value.requested)),
-    pending: fmtNumber(int(value.pending)),
+  if (fold === 'approvals') {
+    return i18nT('pages.chat.crewLog.summary_approvals', {
+      requested: fmtNumber(int(value.requested)),
+      pending: fmtNumber(int(value.pending)),
+    })
+  }
+  // `spawned` rather than the row count: it is every child the session dispatched,
+  // which is the number a reader is scanning this header for, and it exceeds the rows
+  // by `omitted` on a session that dispatched past the retention cap.
+  // `running` rather than `open.length`: the fold derives it from the totals, so it stays
+  // exact once retention has dropped a dispatch, where the retained `open` list cannot.
+  return i18nT('pages.chat.crewLog.summary_subagents', {
+    spawned: fmtNumber(int(obj(value.totals).spawned)),
+    open: fmtNumber(int(value.running)),
   })
 }
 
@@ -599,11 +739,12 @@ const SECTION_TITLE_KEY: Record<CrewLogFold, string> = {
   timeline: 'pages.chat.crewLog.section_timeline',
   tools: 'pages.chat.crewLog.section_tools',
   approvals: 'pages.chat.crewLog.section_approvals',
+  subagents: 'pages.chat.crewLog.section_subagents',
 }
 
-/** Sections open on first render: the two that fit without scrolling. The three
+/** Sections open on first render: the two that fit without scrolling. The four
  *  list folds stay closed — their headers already carry the count a reader is
- *  scanning for, and opening all five would put a 200-row feed above them. */
+ *  scanning for, and opening all six would put a 200-row feed above them. */
 const OPEN_BY_DEFAULT: CrewLogFold[] = ['status', 'usage']
 
 /* ── the section ──────────────────────────────────────────────────────────── */
@@ -750,6 +891,7 @@ export function CrewLogTab({ slot }: { slot: string }) {
               {fold === 'timeline' && <TimelineBody value={value} />}
               {fold === 'tools' && <ToolsBody value={value} />}
               {fold === 'approvals' && <ApprovalsBody value={value} />}
+              {fold === 'subagents' && <SubagentsBody value={value} />}
             </Section>
           )
         })}
