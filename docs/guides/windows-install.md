@@ -141,7 +141,7 @@ Current status:
   still fails immediately and includes the launch-log cause.
   `.github/scripts/test-windows-installer.ps1` starts the just-installed
   bundled interpreter against an isolated data home and requires `/api/ready`
-  within 30 seconds, covering both the packaged caches and the full gateway
+  within 50 seconds, covering both the packaged caches and the full gateway
   handoff. **This runs on every qualifying PR.** `build.yml`'s installer job
   bundles a real python-build-standalone runtime carrying the wheel `build-wheel`
   produced, so the script's gateway leg has an interpreter to start and the job
