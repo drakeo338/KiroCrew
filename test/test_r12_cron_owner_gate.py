@@ -64,6 +64,8 @@ def _crons() -> MagicMock:
     crons.remove_jobs = AsyncMock(return_value=([JOB_ID], []))
     crons.enable_job_async = AsyncMock(return_value=True)
     crons.get_job_async = AsyncMock(return_value=job)
+    # The app-ownership check reads the job's stamp from the cache-only lookup.
+    crons.get_job = MagicMock(return_value=job)
     crons.is_running = MagicMock(return_value=False)
     crons.discard_finished_run = MagicMock()
     crons.run_job = AsyncMock(return_value=None)
