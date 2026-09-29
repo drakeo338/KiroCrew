@@ -34,6 +34,7 @@ from kiro_crew.config.loader import (
 )
 from kiro_crew.constants import (  # noqa: F401 -- DENY_CAUSE_* / STEER_NOTICE_BOUND_SECS re-exported
     DENY_CAUSE_APPROVAL_NO_BUDGET,
+    DENY_CAUSE_APPROVAL_OVERSIZE,
     DENY_CAUSE_APPROVAL_TIMEOUT,
     DENY_CAUSE_APPROVAL_UNDELIVERABLE,
     DENY_CAUSE_BATCH_CASCADE,
