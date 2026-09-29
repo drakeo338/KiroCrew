@@ -5,8 +5,8 @@
  * bug report: an agent that lost its native todo_list state after a restart
  * and could not tick rows 4–7), expands the pill, clicks row 4, and lets the
  * stubbed `PATCH /api/chat/slots/{slot}/todo` echo the same `todo_update`
- * frame the gateway broadcasts. Three shots per theme: collapsed, expanded,
- * after the tick.
+ * frame the gateway broadcasts. Four shots per theme: collapsed, expanded,
+ * after the tick, and the failure state (the stub refuses the next PATCH).
  *
  * Usage: node scripts/capture-todo-pill-tick.mjs [outDir]
  */
@@ -43,6 +43,7 @@ const todoPayload = tasks => {
 }
 
 let todo = todoPayload(TASKS)
+let remote = false
 
 const slots = () => [{
   key: SLOT,
@@ -57,6 +58,8 @@ const slots = () => [{
   modified: Math.floor(Date.now() / 1000),
   source_links: [],
   source_links_total: 0,
+  executor: remote ? 'remote' : 'local',
+  instance_id: remote ? 'peer-1' : '',
   todo,
 }]
 
@@ -79,12 +82,36 @@ const detail = () => ({
 async function main() {
   const { srv, base } = await serveDist()
   const browser = await chromium.launch()
-  const context = await browser.newContext({ viewport: { width: 1400, height: 900 }, deviceScaleFactor: 2 })
+  const context = await browser.newContext({ viewport: { width: 1400, height: 1200 }, deviceScaleFactor: 2 })
 
   let wsServer = null
+  let refuseNext = false
+  let holdNext = false
+  let releaseHeld = null
   const extra = async (path, route) => {
+    // The remote scenario: the peer's capability read must answer a real
+    // shape, or the chat page's model memo dereferences a missing `models`.
+    if (/^\/api\/instances\/[^/]+\/capabilities$/.test(path)) {
+      await json(route, { models: [], effort_levels: [], default_model: '' })
+      return true
+    }
+    if (path.startsWith('/api/instances')) {
+      await json(route, { instances: remote ? [{ id: 'peer-1', name: 'peer-1', status: 'online' }] : [], active: '' })
+      return true
+    }
     const m = /^\/api\/chat\/slots\/([^/]+)\/todo$/.exec(path)
     if (m && route.request().method() === 'PATCH') {
+      if (refuseNext) {
+        refuseNext = false
+        await json(route, { error: 'the calling session is gone, so this write cannot be attributed', code: 'caller_unattributable' }, 403)
+        return true
+      }
+      if (holdNext) {
+        holdNext = false
+        await new Promise(r => { releaseHeld = r })
+        await json(route, { ok: true, todo })
+        return true
+      }
       const body = route.request().postDataJSON()
       const tasks = TASKS.map(([text, done]) => [text, done])
       const idx = Number(body.id) - 1
@@ -116,14 +143,22 @@ async function main() {
   async function shoot(name) {
     const pill = page.getByTestId('todo-pill')
     await pill.waitFor({ state: 'visible', timeout: 10000 })
-    const box = await pill.boundingBox()
-    const list = page.getByTestId('todo-list')
-    const lb = (await list.count()) ? await list.boundingBox() : null
+    // Clip to the pill's OUTER panel, which grows with its content (the
+    // refusal notice sits under the list, outside its max-height), rather
+    // than the inner list's box. The panel lives in the composer status
+    // stack, capped at 50svh with its own scrollbar: the tall viewport keeps
+    // the whole panel inside that cap, and the scroll keeps a notice in view
+    // when it is not.
+    const notice = page.getByTestId('todo-tick-error')
+    if (await notice.count()) await notice.scrollIntoViewIfNeeded()
+    await page.waitForTimeout(150)
+    const panel = pill.locator('xpath=ancestor::div[contains(@class,"animate-slide-up")][1]')
+    const box = await panel.boundingBox()
     const top = Math.max(0, box.y - 24)
-    const bottom = (lb ? lb.y + lb.height : box.y + box.height) + 24
+    const bottom = box.y + box.height + 24
     await page.screenshot({
       path: `${OUT}/${name}.png`,
-      clip: { x: 0, y: top, width: 1400, height: Math.min(900 - top, bottom - top + 60) },
+      clip: { x: 0, y: top, width: 1400, height: Math.min(1200 - top, bottom - top + 60) },
     })
     console.log('wrote', `${OUT}/${name}.png`)
   }
@@ -144,6 +179,28 @@ async function main() {
     console.log(theme, 'after tick:', count, 'row4 aria-checked=', checked)
     if (checked !== 'true' || !/^4 /.test(count || '')) throw new Error(`tick did not repaint: ${count} / ${checked}`)
     await shoot(`${theme}-3-after-tick-4-of-7`)
+    // The failure state: the gateway refuses the next tick; the row keeps its
+    // old state and the notice names it with the server's words as detail.
+    refuseNext = true
+    await rows.nth(4).click()
+    await page.getByTestId('todo-tick-error').waitFor({ state: 'visible', timeout: 5000 })
+    await page.waitForTimeout(200)
+    await shoot(`${theme}-4-tick-refused`)
+    // The pending state: hold the next PATCH open and photograph the greyed row.
+    holdNext = true
+    await page.getByTestId('todo-tick-error').getByRole('button', { name: /dismiss/i }).click().catch(() => {})
+    await rows.nth(5).click()
+    await page.waitForTimeout(250)
+    await shoot(`${theme}-5-tick-pending`)
+    if (releaseHeld) releaseHeld()
+    await page.waitForTimeout(300)
+    // A remote-bound session: the same list, drawn read-only.
+    remote = true
+    await load(theme)
+    await page.getByTestId('todo-pill').click()
+    await page.waitForTimeout(300)
+    await shoot(`${theme}-6-remote-read-only`)
+    remote = false
   }
 
   await browser.close()

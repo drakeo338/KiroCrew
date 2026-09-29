@@ -10781,8 +10781,15 @@
         "more": "mais…",
         "of": "de",
         "task_completion": "Conclusão das tarefas",
-        "aria_mark_done": "Marcar tarefa como concluída: {{task}}",
-        "aria_mark_not_done": "Marcar tarefa como não concluída: {{task}}"
+        "aria_mark_done": "Marcar como concluída: {{task}}. O agente não a refará. Clique de novo para desfazer.",
+        "aria_mark_not_done": "Marcar como não concluída: {{task}}. O agente a trata como pendente. Clique de novo para desfazer.",
+        "click_to_toggle_hint": "Clique numa linha para marcá-la como concluída ou não. As concluídas o agente não refaz; as não concluídas ele trata como pendentes. Clique de novo para desfazer.",
+        "tick_failed_lead": "A lista não foi atualizada; a linha mantém o estado anterior. Clicar de novo é seguro: a linha só muda quando a lista mostrar.",
+        "read_only_hint": "Somente leitura: esta lista é gerida pela outra máquina da sessão.",
+        "fail_task_stale": "A lista mudou enquanto você clicava, então esta linha agora é outra tarefa. Olhe a linha de novo antes de clicar.",
+        "fail_task_gone": "Essa linha não está mais na lista. O agente substituiu a lista dele.",
+        "fail_session_gone": "O painel perdeu o rastro de quem está clicando. Recarregue a página e clique de novo.",
+        "fail_remote": "Esta lista é gerida pela outra máquina da sessão, então não pode ser alterada aqui."
       },
       "thinkingBlock": {
         "collapse_model_reasoning": "Recolher o raciocínio do modelo",

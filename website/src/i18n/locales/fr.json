@@ -10781,8 +10781,15 @@
         "more": "de plus…",
         "of": "sur",
         "task_completion": "Progression des tâches",
-        "aria_mark_done": "Marquer la tâche comme terminée : {{task}}",
-        "aria_mark_not_done": "Marquer la tâche comme non terminée : {{task}}"
+        "aria_mark_done": "Marquer terminée : {{task}}. L'agent ne la refera pas. Clique à nouveau pour annuler.",
+        "aria_mark_not_done": "Marquer non terminée : {{task}}. L'agent la considère comme encore ouverte. Clique à nouveau pour annuler.",
+        "click_to_toggle_hint": "Clique sur une ligne pour la marquer terminée ou non. L'agent ne refait pas les lignes terminées et considère les autres comme ouvertes. Clique à nouveau pour annuler.",
+        "tick_failed_lead": "La liste n'a pas été mise à jour ; la ligne garde son état. Recliquer est sans risque : une ligne ne change que quand la liste l'affiche.",
+        "read_only_hint": "Lecture seule : cette liste est gérée par l'autre machine de la session.",
+        "fail_task_stale": "La liste a changé pendant le clic, cette ligne est donc une autre tâche maintenant. Relis la ligne avant de cliquer.",
+        "fail_task_gone": "Cette ligne n'est plus dans la liste. L'agent a remplacé sa liste.",
+        "fail_session_gone": "Le tableau de bord ne sait plus qui clique. Recharge la page et clique à nouveau.",
+        "fail_remote": "Cette liste est gérée par l'autre machine de la session, elle ne peut donc pas être modifiée ici."
       },
       "thinkingBlock": {
         "collapse_model_reasoning": "Réduire le raisonnement du modèle",

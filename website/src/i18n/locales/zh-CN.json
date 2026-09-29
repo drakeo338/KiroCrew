@@ -10477,8 +10477,15 @@
         "more": "更多…",
         "of": "/",
         "task_completion": "任务完成度",
-        "aria_mark_done": "标记任务已完成：{{task}}",
-        "aria_mark_not_done": "标记任务未完成：{{task}}"
+        "aria_mark_done": "标记完成：{{task}}。agent 不会重做。再点一次可撤销。",
+        "aria_mark_not_done": "标记未完成：{{task}}。agent 会当作还没做。再点一次可撤销。",
+        "click_to_toggle_hint": "点一行可标记完成或未完成。完成的 agent 不会重做；未完成的当作还没做。再点一次可撤销。",
+        "tick_failed_lead": "清单没有更新，该行保持原状。可以放心再点：只有清单显示变了，行才算变了。",
+        "read_only_hint": "只读：这份清单由这个 session 的另一台机器管理。",
+        "fail_task_stale": "你点的时候清单变了，这一行现在是另一个任务。点之前再看一眼这一行。",
+        "fail_task_gone": "这一行已经不在清单里了。agent 换掉了它的清单。",
+        "fail_session_gone": "面板不知道是谁在点了。刷新页面再点一次。",
+        "fail_remote": "这份清单由这个 session 的另一台机器管理，这里改不了。"
       },
       "thinkingBlock": {
         "collapse_model_reasoning": "收起模型推理",
