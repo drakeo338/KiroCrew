@@ -40,6 +40,28 @@ describe('ChatInput while the session compacts', () => {
     expect(screen.queryByTestId('stop-button-armed')).toBeNull()
   })
 
+  it('yields to a typed draft: the idle Send stays so the message queues behind the compaction', () => {
+    renderWithProviders(<ChatInput {...defaultProps} value="carry on" compacting onStop={vi.fn()} />)
+    expect(screen.queryByTestId('stop-button-compacting')).toBeNull()
+    expect(screen.queryByTestId('compacting-hint')).toBeNull()
+  })
+
+  it('names the next press as the force stop after a declined Stop', () => {
+    const onStop = vi.fn()
+    renderWithProviders(<ChatInput {...defaultProps} isRunning compacting stopDeclined onStop={onStop} />)
+    expect(screen.getByTestId('stop-declined-hint')).toHaveTextContent('Click again to force stop')
+    fireEvent.click(screen.getByTestId('stop-button-armed'))
+    expect(onStop).toHaveBeenCalled()
+  })
+
+  it('yields to a live turn: the armed Stop stays while a turn shares the session', () => {
+    const onStop = vi.fn()
+    renderWithProviders(<ChatInput {...defaultProps} compacting isRunning onStop={onStop} />)
+    expect(screen.queryByTestId('stop-button-compacting')).toBeNull()
+    fireEvent.click(screen.getByTestId('stop-button-armed'))
+    expect(onStop).toHaveBeenCalled()
+  })
+
   it('yields to a stop the user already chose (soft_pending)', () => {
     const onStop = vi.fn()
     renderWithProviders(<ChatInput {...defaultProps} compacting isRunning onStop={onStop} stopState="soft_pending" />)
@@ -66,8 +88,10 @@ describe('StopEventCard stop_declined_compacting', () => {
     const card = screen.getByTestId('stop-event-card')
     expect(card).toHaveAttribute('data-state', 'stop_declined_compacting')
     expect(card).toHaveAttribute('role', 'status')
-    expect(card).toHaveTextContent('[Compacting — Stop declined]')
+    expect(card).toHaveTextContent('[Compacting: Stop declined, nothing was stopped; it finishes on its own]')
     expect(card.className).not.toContain('text-danger')
+    // A settled history row: no spinner, or it claims live activity forever.
+    expect(card.querySelector('.animate-spin')).toBeNull()
   })
 
   it('reads differently from the three existing states', () => {

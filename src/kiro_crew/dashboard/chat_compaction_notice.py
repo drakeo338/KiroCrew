@@ -65,14 +65,14 @@ CHANNEL_COMPACT_FAILED_NOTICE = (
 #: memory: after a soft stop the process is intact, after a hard stop the stop
 #: already said the session was reset.
 CHANNEL_COMPACT_CANCELLED_NOTICE = (
-    "Compaction at {pct:.0f}% was ended by a stop. The session was not restarted for "
-    "it; compaction retries after a cooldown, or send {cmd} to compact now."
+    "A stop ended the compaction that started at {pct:.0f}% of the context limit. "
+    "The session kept running as it was; it will try to compact again later, or "
+    "send {cmd} to do it now."
 )
 #: Shared tail of both restart notices. The successor's first turn IS built from a
-#: recent excerpt of the transcript (``ContextBuilder`` thread history), so "no
-#: longer remembers them" was false in the direction that hurt: a user who believes
-#: the context is gone has no reason to ask the agent to pick the work back up
-#: (#14841).
+#: recent excerpt of the transcript (``ContextBuilder`` thread history), so the
+#: notice names that excerpt: a user who believes the context is gone for good has
+#: no reason to ask the agent to pick the work back up.
 _CHANNEL_RESTART_MEMORY_TAIL = (
     "The messages above are still here, and the agent's next reply starts from a "
     "recent excerpt of them rather than the whole thing. Send {new_cmd} any time to "

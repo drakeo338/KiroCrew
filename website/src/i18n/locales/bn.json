@@ -10541,8 +10541,8 @@
         "menu_crewlog_desc": "এই সেশন কী করেছে এবং কত খরচ হয়েছে: স্টেটাস, ব্যবহার, টাইমলাইন, টুল, অনুমোদন"
       },
       "stopEventCard": {
-        "stop_declined_compacting": "থামানো প্রত্যাখ্যাত, সংকোচন চলছে",
-        "stop_declined_compacting_2": "[সংকোচন — থামানো প্রত্যাখ্যাত]",
+        "stop_declined_compacting": "থামানো প্রত্যাখ্যাত: কিছুই থামেনি, প্রসঙ্গ সংকুচিত হচ্ছে",
+        "stop_declined_compacting_2": "[সংকোচন: থামানো প্রত্যাখ্যাত, কিছুই থামেনি; নিজে থেকেই শেষ হবে]",
         "stop_failed_session_reset": "থামানো ব্যর্থ, সেশন রিসেট হয়েছে",
         "stop_failed_session_reset_2": "[থামানো ব্যর্থ, সেশন রিসেট]",
         "stopped": "থামানো হয়েছে",

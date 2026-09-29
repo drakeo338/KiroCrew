@@ -9008,6 +9008,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               isQueued={slotStopping}
               stopState={currentSlot?.stop_state}
               compacting={!!currentSlot?.compacting}
+              stopDeclined={!!currentSlot?.stop_declined}
               approvalMode={displayMode}
               providerId={provider.id}
               reasoningEffort={effectiveEffort}

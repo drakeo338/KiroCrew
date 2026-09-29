@@ -10395,8 +10395,8 @@
         "menu_crewlog_desc": "本会话做了什么、花了多少：状态、用量、时间线、工具、审批"
       },
       "stopEventCard": {
-        "stop_declined_compacting": "已拒绝停止，正在压缩上下文",
-        "stop_declined_compacting_2": "[正在压缩 — 已拒绝停止]",
+        "stop_declined_compacting": "已拒绝停止：什么都没停，正在压缩上下文",
+        "stop_declined_compacting_2": "[正在压缩：已拒绝停止，什么都没停；会自行完成]",
         "stop_failed_session_reset": "停止失败，会话已重置",
         "stop_failed_session_reset_2": "[停止失败，会话已重置]",
         "stopped": "已停止",

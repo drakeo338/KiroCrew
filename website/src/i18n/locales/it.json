@@ -10687,8 +10687,8 @@
         "menu_crewlog_desc": "Cosa ha fatto questa sessione e quanto è costata: stato, consumo, cronologia, strumenti, approvazioni"
       },
       "stopEventCard": {
-        "stop_declined_compacting": "Interruzione rifiutata, compattazione in corso",
-        "stop_declined_compacting_2": "[Compattazione — interruzione rifiutata]",
+        "stop_declined_compacting": "Interruzione rifiutata: nulla è stato interrotto, il contesto si sta compattando",
+        "stop_declined_compacting_2": "[Compattazione: interruzione rifiutata, nulla interrotto; termina da sola]",
         "stop_failed_session_reset": "Arresto non riuscito, sessione reimpostata",
         "stop_failed_session_reset_2": "[Arresto non riuscito, sessione reimpostata]",
         "stopped": "Arrestato",

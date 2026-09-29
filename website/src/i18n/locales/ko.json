@@ -10395,8 +10395,8 @@
         "menu_crewlog_desc": "이 세션이 한 일과 비용: 상태, 사용량, 타임라인, 도구, 승인"
       },
       "stopEventCard": {
-        "stop_declined_compacting": "중지 거부됨, 압축 진행 중",
-        "stop_declined_compacting_2": "[압축 중 — 중지 거부됨]",
+        "stop_declined_compacting": "중지 거부됨: 아무것도 중지되지 않았고 컨텍스트를 압축 중",
+        "stop_declined_compacting_2": "[압축 중: 중지 거부됨, 아무것도 중지되지 않음; 자동으로 완료됨]",
         "stop_failed_session_reset": "중지에 실패하여 세션을 초기화했습니다",
         "stop_failed_session_reset_2": "[중지 실패, 세션 초기화]",
         "stopped": "중지됨",

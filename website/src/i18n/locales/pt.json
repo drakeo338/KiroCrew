@@ -10687,8 +10687,8 @@
         "menu_crewlog_desc": "O que esta sessão fez e quanto custou: estado, consumo, cronologia, ferramentas, aprovações"
       },
       "stopEventCard": {
-        "stop_declined_compacting": "Parada recusada, compactação em andamento",
-        "stop_declined_compacting_2": "[Compactando — parada recusada]",
+        "stop_declined_compacting": "Parada recusada: nada foi parado, o contexto está sendo compactado",
+        "stop_declined_compacting_2": "[Compactando: parada recusada, nada foi parado; termina sozinho]",
         "stop_failed_session_reset": "Falha ao parar, sessão redefinida",
         "stop_failed_session_reset_2": "[Falha ao parar, sessão redefinida]",
         "stopped": "Parado",

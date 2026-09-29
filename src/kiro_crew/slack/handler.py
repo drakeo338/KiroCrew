@@ -153,7 +153,7 @@ from kiro_crew.security import (
 )
 from kiro_crew.sel import sel
 from kiro_crew.session import _CIRCUIT_BREAKER_THRESHOLD, SessionClosingError, SessionManager
-from kiro_crew.session_lifecycle import STOP_DECLINED_COMPACTING_TEXT
+from kiro_crew.session_lifecycle import STOP_DECLINED_COMPACTING_TEXT, compaction_in_flight
 from kiro_crew.slack.blocks import build_working_blocks, deprecation_warning_block
 from kiro_crew.slack.client import SlackClientOps
 from kiro_crew.slack.format import (
@@ -1853,6 +1853,18 @@ async def _handle_slash_command(
         # Against the thread's OWNING session -- a linked thread's turns run
         # under the dashboard session that owns it, and that is the key the
         # replay reads -- resolved the way the OPTIONS expiry below resolves it.
+        if compaction_in_flight(sessions, session_key):
+            # Declined before the Stop is recorded: see slack/events.py.
+            sel().log_tool_invocation(
+                session_key=session_key,
+                source="slack",
+                tool_name="!stop",
+                tool_kind="command",
+                outcome="compacting",
+                metadata={"user": user_id, "channel": channel},
+            )
+            await slack.post_message(channel, STOP_DECLINED_COMPACTING_TEXT, reply_ts)
+            return ""
         note_user_stop(sessions, sessions.get_session_for_thread(reply_ts) or session_key)
         has_session = sessions.has_session(session_key)
         if not has_session:

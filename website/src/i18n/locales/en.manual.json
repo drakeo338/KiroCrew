@@ -4719,8 +4719,8 @@
         "not_scored": "(+{{count}} not scored)"
       },
       "stopEventCard": {
-        "stop_declined_compacting": "Stop declined, compaction in progress",
-        "stop_declined_compacting_2": "[Compacting — Stop declined]"
+        "stop_declined_compacting": "Stop declined: nothing was stopped, the context is compacting",
+        "stop_declined_compacting_2": "[Compacting: Stop declined, nothing was stopped; it finishes on its own]"
       }
     },
     "chatPage": {

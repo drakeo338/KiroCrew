@@ -2493,7 +2493,8 @@ async def _handle_stop_confirm(payload: dict, channel: str, msg_ts: str, user_id
     # Find the active session in this channel/thread
     thread_ts = payload.get("message", {}).get("thread_ts") or msg_ts
     has_session = _orch.sessions.has_session(thread_ts)
-    active_task = _orch._session_tasks.pop(thread_ts, None)
+    # READ, not popped: removed below only once the cancel went through.
+    active_task = _orch._session_tasks.get(thread_ts)
 
     if has_session or active_task:
         response_url = payload.get("response_url", "")
@@ -2526,14 +2527,17 @@ async def _handle_stop_confirm(payload: dict, channel: str, msg_ts: str, user_id
                 )
 
         outcome = await _orch.sessions.stop_turn(thread_ts, on_soft=_on_soft, on_hard=_on_hard)
-        if active_task and not active_task.done():
-            active_task.cancel()
+        if outcome == "compacting":
+            # Nothing was stopped: the task stays tracked and nothing is cancelled.
+            await _update_ephemeral([], STOP_DECLINED_COMPACTING_TEXT)
+        else:
+            _orch._session_tasks.pop(thread_ts, None)
+            if active_task and not active_task.done():
+                active_task.cancel()
         # If stop_turn returned "idle" (no active turn), neither callback
         # fired — dismiss the stale ephemeral with a "Nothing running" message.
         if outcome == "idle":
             await _update_ephemeral([], "Nothing running.")
-        elif outcome == "compacting":
-            await _update_ephemeral([], STOP_DECLINED_COMPACTING_TEXT)
         sel().log_tool_invocation(
             session_key=thread_ts,
             source="slack",

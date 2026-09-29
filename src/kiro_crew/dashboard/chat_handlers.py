@@ -173,6 +173,7 @@ from kiro_crew.dashboard.slot_buffers import (
     note_hold_durable,
     persist_deferred_notes_sync,
 )
+from kiro_crew.dashboard.slot_projection import stop_declined_armed
 from kiro_crew.dashboard.slot_queue_repository import warn_if_not_durable
 from kiro_crew.dashboard.state import (
     DashboardState,
@@ -227,6 +228,7 @@ from kiro_crew.session_agent_selection import (
     restore_agent_selection,
     session_agent_selection_name,
 )
+from kiro_crew.session_lifecycle import compaction_in_flight
 from kiro_crew.session_summary import count_user_turns_in_records
 from kiro_crew.trust_patterns import (
     base_consent_pattern,
@@ -4532,7 +4534,7 @@ def _resolve_stop_event(slot: _ChatSlot, outcome: str) -> None:
         final_state = "stopped"
     elif outcome == "compacting":
         # Nothing was stopped: the session's own /compact turn held it and a
-        # cooperative Stop was declined (#14841). The card becomes the notice,
+        # cooperative Stop was declined. The card becomes the notice,
         # so the row the press opened tells the user what happened to it.
         final_state = "stop_declined_compacting"
     else:
@@ -4987,6 +4989,18 @@ async def stop_slot_turn(
     # travel. Deliberately placed before the local path rather than beside it:
     # there is no local turn to also stop, and running both would insert a second
     # stop_event card for one press.
+    # The second press after a DECLINED Stop (the session was compacting) is
+    # the user's escape hatch and takes the escalation branch below, which is
+    # the only path to a hard kill. The decline itself leaves ``_stop_state``
+    # idle -- the queue drain reads that machine as "a stop is in progress" and
+    # would persist a false "Session reset" row on the next queued turn -- so the
+    # arming lives in its own marker, consumed here: the claim it makes lasts
+    # exactly as long as the escalation needs it, on a press that IS a stop.
+    if slot.running and slot._stop_state == "idle" and stop_declined_armed(slot):
+        slot._stop_declined_at = 0.0
+        slot._stop_state = "soft_pending"
+        escalate = True
+
     if slot.is_remote:
         accepted = await forward_peer_stop(state, slot, force or slot._stop_state == "soft_pending")
         if not accepted:
@@ -5110,17 +5124,22 @@ async def stop_slot_turn(
     # A cooperative Stop while the session's own automatic /compact holds it is
     # DECLINED, before any of the soft-stop side effects below run. Cancelling
     # that turn fails the compaction, and the failure arm recycles the session:
-    # the user pressed Stop on what looked like a stalled turn and lost the
-    # session's memory to a restart the notice then blamed on compaction
-    # (#14841). The card the press would have opened is opened and settled in
+    # a user who pressed Stop on what looked like a stalled turn would lose the
+    # session's memory to a restart the notice then blames on compaction.
+    # The card the press would have opened is opened and settled in
     # one step, so the press still leaves a visible answer in the transcript.
     # A force stop (second press, or ?force=true) is the escape hatch and is
-    # never declined; ``stop_turn`` repeats this check for the race in which a
-    # compaction starts between here and the cancel.
+    # never declined: the force branch above runs first, and the decline below
+    # arms ``_stop_declined_at`` so the NEXT press reaches that branch instead
+    # of being declined again -- a live turn that shares the session with a
+    # compaction must stay stoppable. ``_stop_state`` stays idle: nothing is
+    # stopping. ``stop_turn`` repeats the compacting check for the race in
+    # which a compaction starts between here and the cancel.
     if _compaction_in_flight(state, cancel_key):
         stop_id = _open_stop_event_card(slot, "stopping")
         _resolve_stop_event(slot, "compacting")
         slot._stop_event_id = None
+        slot._stop_declined_at = time.monotonic()
         state.push_slots_update()
         logger.info("Stop: declined for slot %s — compaction in flight", name)
         sel().log_tool_invocation(
@@ -5187,11 +5206,14 @@ async def stop_slot_turn(
     elif outcome == "compacting":
         # The race the pre-check above cannot close: the compaction committed
         # between that read and the cancel. Same answer, and the soft-stop side
-        # effects taken above are undone -- nothing was stopped.
+        # effects taken above are undone: ``_stop_state`` back to idle (nothing
+        # is stopping), auto-run restored, the decline marker armed so the next
+        # press escalates, as on the pre-check path.
         _resolve_stop_event(slot, "compacting")
         slot._stop_event_id = None
         slot._stop_state = "idle"
         slot._auto_run = _was_auto
+        slot._stop_declined_at = time.monotonic()
         state.push_slots_update()
     sel().log_tool_invocation(
         session_key=_history_key_for(name),
@@ -5208,24 +5230,8 @@ async def stop_slot_turn(
 
 
 def _compaction_in_flight(state: DashboardState, cancel_key: str) -> bool:
-    """Whether an automatic compaction holds the session a Stop would cancel.
-
-    Fail-soft to False: a session manager double without the probe, or one
-    that raises, keeps the ordinary stop path -- the pre-check is a courtesy
-    the lifecycle service repeats authoritatively inside ``stop_turn``.
-    """
-    probe = getattr(state.sessions, "is_compacting", None)
-    if not callable(probe):
-        return False
-    try:
-        # ``is True``, not truthiness: a mock-shaped manager answers a truthy
-        # Mock to every attribute, and that must read as "not compacting" rather
-        # than decline every Stop -- the same idiom the runner uses for
-        # ``client.is_kiro_backend is True``.
-        return probe(cancel_key) is True
-    except Exception:
-        logger.debug("compaction probe failed for %s", cancel_key, exc_info=True)
-        return False
+    """The shared pre-stop probe (``session_lifecycle.compaction_in_flight``)."""
+    return compaction_in_flight(state.sessions, cancel_key)
 
 
 async def api_chat_slot_stop(request: web.Request) -> web.Response:
@@ -5750,6 +5756,29 @@ async def api_chat_slot_interrupt(request: web.Request) -> web.Response:
     if not slot._queue:
         return web.json_response({"error": "queue empty, use /stop instead"}, status=400)
 
+    # An automatic compaction holds the session: the interrupt is declined
+    # BEFORE the claim below mutates the running turn (``_stop_state``,
+    # ``_auto_run``) and before ``_unblock_pending_waits`` rejects its pending
+    # approvals -- none of that may happen to a turn that is not being stopped.
+    # The decline marker is armed so a following Stop press escalates, the
+    # same answer ``stop_slot_turn`` gives; ``_stop_state`` stays idle.
+    if _compaction_in_flight(state, cancel_key):
+        stop_id = _open_stop_event_card(slot, "interrupting")
+        _resolve_stop_event(slot, "compacting")
+        slot._stop_event_id = None
+        slot._stop_declined_at = time.monotonic()
+        state.push_slots_update()
+        sel().log_tool_invocation(
+            session_key=_history_key_for(name),
+            agent=getattr(slot, "agent", "") or "kirocrew",
+            source="dashboard",
+            tool_name="dashboard_interrupt",
+            tool_kind="command",
+            outcome="compacting",
+            metadata={"slot": name, "stop_id": stop_id},
+        )
+        return web.json_response({"ok": True, "outcome": "compacting", "compacting": True})
+
     # Claim the stop slot synchronously BEFORE the await below: the
     # idempotency guard above is check-then-act, and a concurrent /interrupt
     # arriving during the awaited body read below would otherwise still see
@@ -5869,6 +5898,20 @@ async def api_chat_slot_interrupt(request: web.Request) -> web.Response:
     if outcome == "idle" and slot._stop_event_id:
         _resolve_stop_event(slot, "soft")
         slot._stop_state = "idle"
+        state.push_slots_update()
+    elif outcome == "compacting":
+        # The race the pre-check above cannot close. Nothing was interrupted, so
+        # the turn keeps its orchestration state: auto-run goes back to what it
+        # was. The pending waits ``_unblock_pending_waits`` rejected cannot be
+        # un-rejected, which is why the pre-check runs first and this arm is
+        # the narrow window only. ``_stop_state`` goes back to idle and the
+        # decline marker is armed so a following Stop press escalates, as on
+        # ``stop_slot_turn``.
+        _resolve_stop_event(slot, "compacting")
+        slot._stop_event_id = None
+        slot._stop_state = "idle"
+        slot._auto_run = prev_auto_run
+        slot._stop_declined_at = time.monotonic()
         state.push_slots_update()
     sel().log_tool_invocation(
         session_key=_history_key_for(name),

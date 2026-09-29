@@ -638,6 +638,9 @@ interface ChatInputProps {
    *  armed Stop button: a Stop here cancels the compaction, not a turn, and the
    *  backend declines it (#14841). The turn/steer controls are untouched. */
   compacting?: boolean
+  /** A cooperative Stop was declined moments ago because the session was
+   *  compacting; the next press is the force stop and the armed Stop says so. */
+  stopDeclined?: boolean
   approvalMode?: string
   reasoningEffort?: string
   /** True when `reasoningEffort` is the configured default rather than a
@@ -1027,6 +1030,7 @@ function ChatInput({
   isQueued = false,
   stopState,
   compacting = false,
+  stopDeclined = false,
   approvalMode,
   reasoningEffort,
   effortIsDefault = false,
@@ -4900,15 +4904,22 @@ function ChatInput({
                 steer path: a host without onStop (the side panel — stopping the
                 main turn from there would be misdirected) still needs the
                 split steer/queue button while a turn runs. */}
-            {compacting && (!stopState || stopState === 'idle') ? (
+            {compacting && !isRunning && !composerHasDraft && (!stopState || stopState === 'idle') ? (
               // An automatic compaction holds the session. It is NOT a turn
               // (`isRunning` is false), so without this branch the composer
               // read idle and the only affordance was Send. The button is the
               // Stop button's shape with the spinner, disabled: pressing Stop
               // here would cancel the compaction and the backend declines it
-              // (#14841), so an inert control that says why beats one that
-              // appears to work and does nothing. Yields to an in-flight
-              // stop (soft_pending / killing), which the user already chose.
+              // so an inert control that says why beats one that appears to
+              // work and does nothing. Yields to a LIVE turn (`isRunning`): a
+              // turn sharing the session with a compaction keeps its armed Stop
+              // and steer controls, and the backend declines the first press
+              // with a card while arming the second as the force escape. Also
+              // yields to an in-flight stop (soft_pending / killing), and to a
+              // TYPED DRAFT: the ordinary idle Send queues the message behind
+              // the compaction (the session's turn permit is held), so a user
+              // with something to say is never left without a send for the
+              // whole compaction -- only the empty composer shows the indicator.
               <div className="flex items-center gap-1.5" data-testid="compacting-indicator">
                 <button
                   className="w-8 h-8 rounded-lg bg-transparent border-none text-muted flex items-center justify-center cursor-not-allowed transition-all"
@@ -5006,9 +5017,21 @@ function ChatInput({
                   </button>
                 )
               ) : onStop ? (
+                stopDeclined ? (
+                  // The press before this one was declined (compaction); the
+                  // backend treats the next press as the force stop, and the
+                  // hint says so before the user finds out by pressing.
+                  <div className="flex items-center gap-1.5">
+                  <button className="w-8 h-8 rounded-lg bg-transparent border-none text-danger hover:bg-danger/10 flex items-center justify-center cursor-pointer transition-all" onClick={stopWithTap} title={i18nT('components.chatInput.force_kill_discards_in_progress_work_and_queued')} aria-label={i18nT('components.chatInput.force_kill_session_discards_in_progress_work_and')} data-testid="stop-button-armed">
+                      <Square size={18} fill="currentColor" />
+                    </button>
+                    <span className="text-xs text-muted whitespace-nowrap" data-testid="stop-declined-hint">{i18nT('components.chatInput.click_again_to_force_stop')}</span>
+                  </div>
+                ) : (
                 <button className="w-8 h-8 rounded-lg bg-transparent border-none text-danger hover:bg-danger/10 flex items-center justify-center cursor-pointer transition-all" onClick={stopWithTap} title={i18nT('components.chatInput.stop_generation')} aria-label={i18nT('components.chatInput.stop_generation')} data-testid="stop-button-armed">
                   <Square size={18} fill="currentColor" />
                 </button>
+                )
               ) : steerOnly ? (
                 // Same shape-stability rule as the split case below, with the
                 // surface's own (plain) send button.

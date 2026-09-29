@@ -10687,8 +10687,8 @@
         "menu_crewlog_desc": "Ce que cette session a fait et ce qu'elle a coûté : état, consommation, chronologie, outils, validations"
       },
       "stopEventCard": {
-        "stop_declined_compacting": "Arrêt refusé, compactage en cours",
-        "stop_declined_compacting_2": "[Compactage — arrêt refusé]",
+        "stop_declined_compacting": "Arrêt refusé : rien n'a été arrêté, le contexte se compacte",
+        "stop_declined_compacting_2": "[Compactage : arrêt refusé, rien n'a été arrêté ; se termine tout seul]",
         "stop_failed_session_reset": "Échec de l'arrêt, session réinitialisée",
         "stop_failed_session_reset_2": "[Échec de l'arrêt, session réinitialisée]",
         "stopped": "Arrêté",

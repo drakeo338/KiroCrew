@@ -59,7 +59,7 @@ _END_REASON_SID_RETAINED = "destroyed_sid_retained"
 _SID_RETENTION_UNKNOWN = "<unreadable session map>"
 #: ``compacting`` is the one outcome that changed nothing: a cooperative Stop
 #: arrived while the session's own ``/compact`` turn held it, and cancelling that
-#: turn would have failed the compaction and recycled the session (#14841). The
+#: turn would fail the compaction and recycle the session. The
 #: caller tells the user, and the compaction finishes or times out on its own.
 #: A ``force`` stop is never answered this way -- it is the user's escape hatch.
 StopOutcome = Literal["soft", "hard", "idle", "compacting"]
@@ -67,9 +67,29 @@ StopOutcome = Literal["soft", "hard", "idle", "compacting"]
 #: What a channel says for the ``compacting`` outcome. One string, so every
 #: surface that declines the Stop declines it in the same words.
 STOP_DECLINED_COMPACTING_TEXT = (
-    "⏳ Compacting context — nothing was stopped. The compaction finishes on its own "
-    "in a few minutes; send your message afterwards."
+    "⏳ Compacting context — nothing was stopped. The compaction finishes on its own; "
+    "a message sent now runs once it has."
 )
+
+
+def compaction_in_flight(sessions: Any, key: str) -> bool:
+    """Whether an automatic compaction holds the session a Stop would cancel.
+
+    The ONE probe every stop path runs BEFORE its side effects (the Stop record,
+    a queue clear, a pending-file unlink), because ``stop_turn`` declining after
+    them leaves a Stop that ended nothing having destroyed queued work. Fail-soft
+    to False and ``is True`` rather than truthiness: a manager double without the
+    method, or one answering a truthy Mock, keeps the ordinary stop path.
+    """
+    probe = getattr(sessions, "is_compacting", None)
+    if not callable(probe):
+        return False
+    try:
+        return probe(key) is True
+    except Exception:
+        return False
+
+
 ProviderFactory = Callable[..., Any]
 _ANY_SESSION = object()
 

@@ -69,6 +69,7 @@ from kiro_crew.security import (
 from kiro_crew.sel import sel
 from kiro_crew.session import unlink_queued_temp_paths
 from kiro_crew.session_lifecycle import STOP_DECLINED_COMPACTING_TEXT
+from kiro_crew.session_lifecycle import compaction_in_flight as _compaction_in_flight
 from kiro_crew.skills import SkillsLoader
 from kiro_crew.slack.allowlist import prompt_track_channel, send_dashboard_link
 from kiro_crew.slack.blocks import (
@@ -2666,16 +2667,28 @@ async def _route_message(
         # session that owns it, and that is the key the replay reads. For a flat
         # DM session_key is already the channel-scoped owning key, so the lookup
         # falls back to it unchanged.
+        if _compaction_in_flight(orch.sessions, session_key):
+            # Declined BEFORE any side effect: the Stop record, the queue clear,
+            # the pending-file unlink and the task pop below all assume the turn
+            # is being ended, and a Stop the session's own /compact turn declines
+            # ends nothing. Same answer ``stop_turn`` gives for the race.
+            if orch.slack:
+                await orch.slack.post_message(channel, STOP_DECLINED_COMPACTING_TEXT, stop_post_ts)
+            sel().log_tool_invocation(
+                session_key=session_key,
+                source="slack",
+                tool_name="!stop",
+                tool_kind="command",
+                outcome="compacting",
+                metadata={"user": sender_id, "channel": channel},
+            )
+            return
         note_user_stop(orch.sessions, orch.sessions.get_session_for_thread(session_key) or session_key)
         has_session = orch.sessions.has_session(session_key)
-        active_task = orch._session_tasks.pop(session_key, None)
+        # READ, not popped: the task is removed only once the cancel is known
+        # to have gone through, below.
+        active_task = orch._session_tasks.get(session_key)
         if has_session or active_task:
-            orch.sessions.clear_queue(session_key)
-            # Dropped pending (pre-session) entries never reach
-            # _dispatch_queued's cleanup, so unlink their temp files here.
-            for _item in orch._pending_queue.pop(session_key, None) or []:
-                unlink_queued_temp_paths(_item[2])
-
             # Post ephemeral "Stopping…" block with Kill Now button
             if orch.slack:
                 await orch.slack.post_ephemeral(
@@ -2697,14 +2710,30 @@ async def _route_message(
                     )
 
             outcome = await orch.sessions.stop_turn(session_key, on_soft=_on_soft, on_hard=_on_hard)
-            if active_task and not active_task.done():
-                active_task.cancel()
+            if outcome == "compacting":
+                # The pre-check above passed and a compaction committed during
+                # the ephemeral post. ``stop_turn`` is the authority: nothing was
+                # stopped, so the queue, the pending uploads and the task all stay.
+                if orch.slack:
+                    await orch.slack.post_message(
+                        channel, STOP_DECLINED_COMPACTING_TEXT, stop_post_ts
+                    )
+            else:
+                # The destructive half, AFTER the outcome: a Stop that ended a
+                # turn drops what was queued behind it. Placed before the cancel
+                # this ran on a declined Stop too and discarded queued work.
+                orch._session_tasks.pop(session_key, None)
+                orch.sessions.clear_queue(session_key)
+                # Dropped pending (pre-session) entries never reach
+                # _dispatch_queued's cleanup, so unlink their temp files here.
+                for _item in orch._pending_queue.pop(session_key, None) or []:
+                    unlink_queued_temp_paths(_item[2])
+                if active_task and not active_task.done():
+                    active_task.cancel()
             # If stop_turn returned "idle" (no active turn), neither callback
             # fired — dismiss the stale "Stopping…" ephemeral explicitly.
             if outcome == "idle" and orch.slack:
                 await orch.slack.post_message(channel, "Nothing running.", stop_post_ts)
-            elif outcome == "compacting" and orch.slack:
-                await orch.slack.post_message(channel, STOP_DECLINED_COMPACTING_TEXT, stop_post_ts)
             sel().log_tool_invocation(
                 session_key=session_key,
                 source="slack",

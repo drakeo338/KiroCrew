@@ -10541,8 +10541,8 @@
         "menu_crewlog_desc": "इस सत्र ने क्या किया और कितना खर्च हुआ: स्थिति, उपयोग, समयरेखा, टूल, अनुमोदन"
       },
       "stopEventCard": {
-        "stop_declined_compacting": "रोकना अस्वीकृत, संकुचन जारी है",
-        "stop_declined_compacting_2": "[संकुचन — रोकना अस्वीकृत]",
+        "stop_declined_compacting": "रोकना अस्वीकृत: कुछ नहीं रुका, संदर्भ संकुचित हो रहा है",
+        "stop_declined_compacting_2": "[संकुचन: रोकना अस्वीकृत, कुछ नहीं रुका; अपने आप पूरा होगा]",
         "stop_failed_session_reset": "रोकना विफल, सत्र रीसेट",
         "stop_failed_session_reset_2": "[रोकना विफल, सत्र रीसेट]",
         "stopped": "रोका गया",

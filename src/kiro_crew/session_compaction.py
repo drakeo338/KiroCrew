@@ -685,12 +685,17 @@ class CompactionCoordinator:
                 # boundary, so the durable mapping remains untouched.
                 claude_session = session
 
+                # Read AFTER the semaphore is held, inside the body: a Stop that
+                # ended the previous turn is not this compaction's cancel.
+                stop_gen = 0
+
                 async def _run_compact() -> None:
+                    nonlocal stop_gen
                     async with claude_session.semaphore:
+                        stop_gen = self._stop_generation(key)
                         await claude_session.provider.compact()
 
                 timeout = self._deps.compact_wait_timeout_secs()
-                stop_gen = self._stop_generation(key)
                 try:
                     # One budget covers both waiting for a live turn and the
                     # compact call itself.
@@ -1043,10 +1048,10 @@ class CompactionCoordinator:
         except (Exception, asyncio.TimeoutError):
             if self._stop_generation(key) > stop_gen:
                 # A user Stop ended the ``/compact`` turn. That is not the harness
-                # failing to compact, and answering it with the recycle below is
-                # the bug this arm used to have: the user pressed Stop on what
-                # looked like a stalled turn and lost the session's memory to a
-                # restart the notice then blamed on compaction (#14841).
+                # failing to compact, and the recycle below must not answer it: a
+                # user who presses Stop on what looks like a stalled turn would
+                # lose the session's memory to a restart the notice then blames
+                # on compaction.
                 return await self._settle_cancelled(key, pct)
             self._deps.logger.warning(
                 "Session %s in-place /compact failed after %.0fs — recycling "
@@ -1059,11 +1064,21 @@ class CompactionCoordinator:
             await self._await_cotenants(key, pct)
             return await self._restart_held(key, session, pct)
         finally:
-            # A hard Stop that landed on this compaction's turn already popped
-            # the session and released its permit to wake waiters
-            # (``_wake_turn_waiters``); this permit was that one. Releasing again
-            # raises out of the compaction and hides the cancelled verdict.
-            if session.semaphore.locked():
+            # Release ONLY the permit this task still owns. The one path that
+            # takes it away is a hard Stop landing on this compaction's turn:
+            # ``reset`` pops the session and releases its permit to wake waiters
+            # (``_wake_turn_waiters``), and from that tick the permit belongs to
+            # whichever claimant woke. A second release here would surface as a
+            # ``ValueError`` on THAT task's own release. ``locked()`` cannot tell
+            # the two apart (the claimant re-locks it), so ownership is decided
+            # from what happened: a Stop was recorded during this hold AND the
+            # registry holds a different session (or none) under the key. Every
+            # other exit -- success, a recycle (which pops but never touches the
+            # permit), a plain failure -- still owns the permit and releases it.
+            if not (
+                self._stop_generation(key) > stop_gen
+                and self._owner._sessions.get(key) is not session
+            ):
                 session.semaphore.release()
 
         escalate = self._owner._settle_compact_cooldown(key, session.provider, pct)

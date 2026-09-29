@@ -10395,8 +10395,8 @@
         "menu_crewlog_desc": "このセッションの作業と消費: 状態、使用量、時系列、ツール、承認"
       },
       "stopEventCard": {
-        "stop_declined_compacting": "停止を拒否しました。圧縮が進行中です",
-        "stop_declined_compacting_2": "[圧縮中 — 停止を拒否]",
+        "stop_declined_compacting": "停止を拒否：何も停止していません。コンテキストを圧縮中",
+        "stop_declined_compacting_2": "[圧縮中：停止を拒否、何も停止していません。自動で完了します]",
         "stop_failed_session_reset": "停止に失敗したため、セッションをリセットしました",
         "stop_failed_session_reset_2": "[停止失敗、セッションをリセット]",
         "stopped": "停止しました",

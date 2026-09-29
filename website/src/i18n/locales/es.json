@@ -10687,8 +10687,8 @@
         "menu_crewlog_desc": "Qué hizo esta sesión y cuánto costó: estado, consumo, cronología, herramientas, aprobaciones"
       },
       "stopEventCard": {
-        "stop_declined_compacting": "Detención rechazada, compactación en curso",
-        "stop_declined_compacting_2": "[Compactando — detención rechazada]",
+        "stop_declined_compacting": "Detención rechazada: no se detuvo nada, el contexto se está compactando",
+        "stop_declined_compacting_2": "[Compactando: detención rechazada, no se detuvo nada; termina solo]",
         "stop_failed_session_reset": "No se pudo detener, sesión restablecida",
         "stop_failed_session_reset_2": "[No se pudo detener, sesión restablecida]",
         "stopped": "Detenido",

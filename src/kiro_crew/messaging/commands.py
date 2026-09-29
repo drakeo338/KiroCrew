@@ -66,6 +66,7 @@ from kiro_crew.messaging.queue_receipt import ReceiptQueue, ReceiptSurface
 from kiro_crew.safety_override import describe_grant_lifetime, safety_override
 from kiro_crew.security import redact
 from kiro_crew.sel import sel
+from kiro_crew.session_lifecycle import STOP_DECLINED_COMPACTING_TEXT, compaction_in_flight
 from kiro_crew.subagent_wait_reasons import DEFERRED_QUEUED_REASONS
 
 if TYPE_CHECKING:  # pragma: no cover - typing only, no runtime import edge
@@ -85,6 +86,11 @@ STOP_REPLY_CANCELLED = "🛑 Stopped."
 #: cleared, and saying so is what distinguishes "nothing to stop" from "the stop did
 #: not work".
 STOP_REPLY_IDLE = "🛑 Nothing was running — queue cleared."
+#: The Stop was declined: the session's own automatic ``/compact`` turn holds it,
+#: and cancelling that turn would fail the compaction and restart the session.
+#: Nothing is cancelled and the queue is KEPT -- the caller's messages run after
+#: the compaction, which is what they were waiting for anyway.
+STOP_REPLY_COMPACTING = STOP_DECLINED_COMPACTING_TEXT
 
 
 def note_user_stop(sessions: Any, session_key: str) -> None:
@@ -154,6 +160,10 @@ async def stop_running_turn(
     queue is still cleared, so claiming a stop that did not happen would be the
     worse lie.
     """
+    if compaction_in_flight(sessions, session_key):
+        # Before the Stop record and before the queue clear: a Stop the
+        # compaction declines ends nothing, so it must destroy nothing either.
+        return STOP_REPLY_COMPACTING
     note_user_stop(sessions, session_key)
     cancelled_turn = False
     if sessions.is_busy(session_key):
