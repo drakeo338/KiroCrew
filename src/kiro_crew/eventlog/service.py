@@ -36,7 +36,7 @@ from kiro_crew.atomic_write import fsync_dir
 from kiro_crew.crew_log.checkpoint import PrefixWitness, witness_mapping
 from kiro_crew.crew_log.schema import KIND_MEMBER
 from kiro_crew.eventlog import members_projections, types
-from kiro_crew.eventlog.log import APPEND_CONTENTION_SECONDS, MemberLog
+from kiro_crew.eventlog.log import APPEND_CONTENTION_SECONDS, MemberLog, UnitLogFull
 from kiro_crew.eventlog.members_projections import all_units
 from kiro_crew.eventlog.types import Event
 from kiro_crew.projection import EMPTY_WATERMARK, DirectoryCheckpointStore, ProjectionRegistry
@@ -79,6 +79,13 @@ class CloserTailContention(Exception):
         self.type = type
 
 
+#: Called after every successful append with ``(kind, id, event)``. The kind is
+#: passed even though this service only serves ``member``, so the hub it feeds
+#: stays kind-generic and a second kind's service is a registration rather than
+#: a second fan-out path.
+EventSink = Callable[[str, str, Event], None]
+
+
 def _redact_projection_value(value: object) -> object:
     """Redact every string in a projection view before it leaves over the WS.
 
@@ -107,6 +114,23 @@ def _redact_projection_value(value: object) -> object:
     if isinstance(value, list):
         return [_redact_projection_value(v) for v in value]
     return value
+
+
+def redact_projection_identifier(value: str) -> str:
+    """Redact a single app-chosen IDENTIFIER -- a string in, a string out.
+
+    Same chain as :func:`_redact_projection_value`, narrowed to the one shape an
+    identifier has. It exists because a projection ``key`` and an event ``type`` are
+    typed ``str`` at their egress sites (``Event`` is a ``TypedDict``), while the
+    recursive redactor is typed ``object -> object`` for the nested payload it walks.
+    Passing the broad one straight into a ``str`` field type-checks nowhere, and the
+    honest fix is a narrow signature rather than a cast that silences the checker.
+
+    A non-string somehow arriving here is returned unchanged rather than coerced: a
+    caller's type error must not turn into a silently different stored identifier.
+    """
+    out = _redact_projection_value(value)
+    return out if isinstance(out, str) else value
 
 
 #: Suffix the legacy activity file is renamed to once the fold has run. Hygiene
@@ -211,6 +235,8 @@ _CLEAN_KEPT = "kept"
 #: so the caller re-runs the one spelling of deletion instead of removing the
 #: source beside a fold nothing would ever collect.
 _CLEAN_RACED = "raced"
+
+UNIT_KIND = "member"
 
 _singleton: "MemberEventLogService | None" = None
 _singleton_lock = threading.Lock()
@@ -608,6 +634,9 @@ class MemberEventLogService:
         self._slug_locks: dict[str, threading.Lock] = {}
         self._map_lock = threading.Lock()
         self._registry = ProjectionRegistry()
+        #: Per-append sink that fans events to log subscribers; attached once
+        #: at dashboard startup by the contribution protocol's WS hub.
+        self._event_sink: EventSink | None = None
         for unit in all_units():
             self._registry.register(unit)
         self._registry.set_on_change(self._on_change)
@@ -710,6 +739,21 @@ class MemberEventLogService:
         from kiro_crew.crew_log.store import crew_log_path
 
         return crew_log_path(KIND_MEMBER, slug)
+
+    def attach_event_sink(self, sink: "EventSink | None") -> None:
+        """Set the per-append sink that fans events to log subscribers.
+
+        Called once at dashboard startup with the eventlog WebSocket hub. The
+        sink runs INSIDE the per-slug lock, on whatever thread appended, so it
+        must only enqueue -- see ``dashboard.eventlog_ws.EventLogHub.publish``,
+        which does exactly that and never blocks or raises.
+        """
+        self._event_sink = sink
+
+    @property
+    def event_sink(self) -> "EventSink | None":
+        """The attached sink, so a service rebuild can carry it over."""
+        return self._event_sink
 
     def _slug_lock(self, slug: str) -> threading.Lock:
         with self._map_lock:
@@ -1448,7 +1492,20 @@ class MemberEventLogService:
                     observed if isinstance(observed, dict) else {},
                 ):
                     return None
-                event = log.append_if(type, data, max_tail_seq=folded_to, deadline=deadline)
+                try:
+                    event = log.append_if(type, data, max_tail_seq=folded_to, deadline=deadline)
+                except UnitLogFull:
+                    # The unit's log is at its ceiling, so the closer cannot land.
+                    # That is a normal not-placed outcome, not a failure: the
+                    # projection stays as it is and a later read re-decides, exactly
+                    # as when the predicate stops applying. Not raised, because a
+                    # full log is not the tail race the exhaustion path reports.
+                    logger.debug(
+                        "closer for slug=%r type=%r not placed: unit log is full",
+                        slug,
+                        type,
+                    )
+                    return None
                 if event is not None:
                     # No gap fold here, unlike the plain append path. The write only
                     # happened because the tail was still at or below what the fold
@@ -1514,6 +1571,24 @@ class MemberEventLogService:
             if below is not None and earlier["seq"] >= below:
                 break
             self._registry.drive(slug, earlier)
+            # This is the only point a cross-process commit is observed here, so
+            # a subscriber must be told about it now. Without this the event folds
+            # into projections but publishes no `eventlog_event`, and the delta
+            # channel's `seq === last + 1` recovery cannot fire until some LATER
+            # append arrives -- so the subscriber holds a stale fold silently for
+            # as long as none does. Fired inside the per-slug lock like the append
+            # sink, so the hub only enqueues (see attach_event_sink).
+            sink = self._event_sink
+            if sink is not None:
+                try:
+                    sink(UNIT_KIND, slug, earlier)
+                except Exception:
+                    logger.debug(
+                        "eventlog gap sink failed for %r seq=%s",
+                        slug,
+                        earlier["seq"],
+                        exc_info=True,
+                    )
 
     def _append_locked(self, slug: str, log: MemberLog, type: str, data: dict) -> Event:
         """Append + fold; caller holds the per-slug lock."""
@@ -1529,9 +1604,21 @@ class MemberEventLogService:
         # undercount them until a restart re-primed from the file.
         #
         # `drive` is idempotent per cell (it skips a seq that cell already has),
-        # so replaying the range costs a cell nothing it has seen.
+        # so replaying the range costs a cell nothing it has seen. ``_fold_gap_locked``
+        # also publishes each gap event it folds, so a cross-process commit reaches
+        # subscribers here rather than only when the NEXT append happens to arrive.
         self._fold_gap_locked(slug, log, below=event["seq"])
         self._registry.drive(slug, event)
+        sink = self._event_sink
+        if sink is not None:
+            try:
+                sink(UNIT_KIND, slug, event)
+            except Exception:
+                # The event is already durable and folded; a subscriber fan-out
+                # fault must not turn a committed append into a failed one. The
+                # subscriber detects the gap on its next seq check and heals with
+                # a catch-up read, which is the contract's own recovery path.
+                logger.debug("eventlog sink failed for %r/%r", slug, type, exc_info=True)
         return event
 
     # ---- removal ----------------------------------------------------------
@@ -1669,6 +1756,22 @@ class MemberEventLogService:
                     self._names.pop(slug, None)
         return status
 
+    def events_after(self, slug: str, *, after: int = -1, limit: int = 200) -> list[Event]:
+        """Oldest-first page of events with ``seq > after`` (contribution protocol).
+
+        The catch-up half of the delta channel: a subscriber that lost frames, or
+        one starting cold, folds this page in order and then streams. Returns an
+        empty list for a slug with no log rather than raising -- a caller asking
+        about a unit that does not exist has already been answered 404 by the
+        route's own existence check.
+        """
+        lock = self._slug_lock(slug)
+        with lock:
+            log = self._get_log(slug)
+            if log is None:
+                return []
+            return log.events_after(after, limit)
+
     # ---- read -------------------------------------------------------------
     def snapshot(self, slug: str) -> dict:
         lock = self._slug_lock(slug)
@@ -1761,6 +1864,11 @@ def get_service() -> MemberEventLogService:
         if _singleton is None or _singleton.root != root:
             previous = _singleton
             _singleton = MemberEventLogService(root, previous.broadcast if previous else None)
+            if previous is not None and previous.event_sink is not None:
+                # The hub is attached once at startup and is not rebound when
+                # the data home moves, so a rebuild that dropped the sink
+                # would leave every later append invisible to its subscribers.
+                _singleton.attach_event_sink(previous.event_sink)
         return _singleton
 
 
