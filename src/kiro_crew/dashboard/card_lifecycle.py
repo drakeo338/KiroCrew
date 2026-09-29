@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import re
 from html import unescape
@@ -137,6 +138,9 @@ class CardLifecycle:
         self.state = state
         self.enabled = enabled
         self.publisher = CardPublisher(self._generate, self._valid, self._changed)
+        #: Slot key -> a card the PRODUCT derived, with its owner identity and stamp. See
+        #: :meth:`publish_derived`; deliberately not an entry in the queue above.
+        self.derived: dict[str, dict] = {}
         self.wake = asyncio.Event()
         self.worker: asyncio.Task[None] | None = None
         self.cancel_pending = False
@@ -150,6 +154,10 @@ class CardLifecycle:
         if enabled:
             self.seed_open_sessions()
         else:
+            # The derived map is deliberately NOT cleared here. This flag is the owner's
+            # opt-in to the cost of model-generated cards, and a derived card has none --
+            # clearing it would make turning that cost off also delete the conductor's
+            # board, which the owner did not ask for and cannot see the connection to.
             self.restart_after_cancel = False
             keys = list(self.publisher.entries)
             self.publisher.entries.clear()
@@ -357,6 +365,93 @@ class CardLifecycle:
         entry.generated_source = source
         return payload
 
+    # ----------------------------------------------------------------------
+    # THE DERIVED SEAM: a card the product built, with no model call
+    # ----------------------------------------------------------------------
+    #
+    # Kept in its own map rather than as a flag on ``CardEntry``, and that is what makes
+    # this the SMALLEST seam: a derived card never enters the generator's state machine,
+    # so it cannot take the sole permit, spend an attempt from the shared hourly budget,
+    # be debounced, or be marked stale against a revision nothing will regenerate. None
+    # of those mechanisms exist for it because none of them apply.
+    #
+    # It is also why it does not read ``self.enabled``. That flag is the owner's opt-in to
+    # the COST of model-generated cards; a card assembled from a fold the product already
+    # keeps costs nothing, so gating it there would hide the one card on the machine that
+    # is free -- and the conductor's board is the dashboard, not an extra.
+
+    def publish_derived(self, slot: Any, payload: dict | None) -> bool:
+        """Store *payload* as *slot*'s card. Returns whether it was stored.
+
+        The payload is normalized by the host's own :func:`normalize_card`, exactly like a
+        model's is: a derived producer is still a producer and its output is still refused
+        rather than trusted. A refused card leaves the previous one in place, because a
+        board that briefly cannot be built is not a board that changed.
+        """
+        current = self.state._slots.get(slot.key)
+        if current is not slot:
+            # A scratch copy shares the live identity and its edits are not committed.
+            return False
+        if not self._derived_allowed(slot):
+            return False
+        # NOT ``_eligible``: that also excludes a session another session created, and its
+        # stated reason is the shared hourly budget -- a fan-out of workers would spend it
+        # and starve the session a person is following. A derived card spends nothing from
+        # that budget, so the exclusion has no force here, and a conductor dispatched by
+        # another session is exactly the case that must still get its board.
+        card = normalize_card(payload, (self.derived.get(slot.key) or {}).get("card"))
+        if card is None:
+            return False
+        self.derived[slot.key] = {
+            "card": card,
+            # The owner identity travels with it: a slot's replacement session must not
+            # inherit the retired crew's board, which would be the one wrong thing a
+            # cached panel can do.
+            "owner": slot._dashboard_card_identity,
+            "published_at": self.publisher.wall_clock(),
+        }
+        # NOT ``_changed``: it derives ``removed`` from whether the key is in the
+        # GENERATOR's queue, which a derived card never joins -- so routing a successful
+        # publish through it announces the card as REMOVED, and the client answers a
+        # removal by resetting the card query it was just handed. This says what happened.
+        self.state.broadcast_ws_owners("dashboard_card", {"slot": slot.key, "removed": False})
+        return True
+
+    def forget_derived(self, key: str) -> None:
+        """Drop *key*'s derived card. Called where the queue's entry is dropped."""
+        if self.derived.pop(key, None) is not None:
+            self._changed(key)
+
+    @staticmethod
+    def _derived_allowed(slot: Any) -> bool:
+        """Whether *slot*'s content may be published to a derived surface AT ALL.
+
+        Privacy and remoteness only -- the cost exclusions do not apply to a card that costs
+        nothing. Read on EVERY read as well as at publish, because these are properties of
+        the slot as it is NOW and a slot can tighten after its card was stored: a persistent
+        session turned incognito, or one that became remote, would otherwise keep serving
+        content the live rules withhold. A published card that outlives the condition that
+        permitted it is the same defect as never having checked.
+        """
+        return not (
+            getattr(slot, "is_remote", False)
+            or getattr(slot, "executor", "") == "remote"
+            or is_incognito_transcript(getattr(slot, "memory_mode", ""))
+        )
+
+    def _derived_for(self, slot: Any) -> dict | None:
+        held = self.derived.get(slot.key)
+        if held is None:
+            return None
+        # EVICTED, not merely hidden, on either refusal. Leaving the entry in place would
+        # keep withheld content in memory and let it reappear the moment the slot loosened
+        # again -- and a card nobody may read is not a card being kept, it is a leak waiting
+        # for the condition to flip back.
+        if held["owner"] != slot._dashboard_card_identity or not self._derived_allowed(slot):
+            self.forget_derived(slot.key)
+            return None
+        return held
+
     async def read(self, slot: Any) -> dict:
         entry = self.publisher.entries.get(slot.key)
         empty = {
@@ -366,6 +461,21 @@ class CardLifecycle:
             "content_event_at": None,
             "stale": False,
         }
+        # BEFORE the ``enabled`` gate, for the reason above: a derived card is free, so
+        # the cost opt-in does not decide whether it is shown. Before the queue too -- a
+        # card the product derived from a fold is not in competition with one a model
+        # wrote about the same session, it is the more authoritative of the two.
+        held = self._derived_for(slot)
+        if held is not None:
+            return {
+                "card": copy.deepcopy(held["card"]),
+                "status": "published",
+                "published_at": held["published_at"],
+                # No generating event behind it and nothing pending to be stale against:
+                # it is rebuilt from the fold every time its own source is read.
+                "content_event_at": None,
+                "stale": False,
+            }
         if not self.enabled:
             return {**empty, "status": "disabled"}
         if not self._eligible(slot):

@@ -36,8 +36,10 @@ carry it forever.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Final, Literal, TypedDict, cast
 
+from kiro_crew.dashboard.dynamic_cards import MAX_DATA_BYTES as _HOST_MAX_DATA_BYTES
 from kiro_crew.work_vocab import (
     WORK_ITEM_STATES,
     WORK_VERDICTS,
@@ -69,8 +71,12 @@ UNSAID: Final[Unsaid] = "__unsaid__"
 __all__ = [
     "BOARD_CREW_NAME",
     "BOARD_TEMPLATE_ID",
+    "CARD_TEMPLATE_ID",
     "CONTRACT_VERSION",
     "EMPTY_JUDGMENT",
+    "MAX_CARD_DATA_BYTES",
+    "NOT_SAID",
+    "UNREADABLE",
     "UNSAID",
     "JudgmentError",
     "PipelineBoardCard",
@@ -86,6 +92,8 @@ __all__ = [
     "WorkBoardItem",
     "WorkBoardView",
     "build_pipeline_board",
+    "card_template_path",
+    "panel_card_data",
     "panel_payload",
     "validate_judgment",
 ]
@@ -537,18 +545,30 @@ def _card(item: WorkBoardItem, judgment: PipelineBoardJudgment) -> PipelineBoard
     }
 
 
+#: The metric tiles a board has, in render order. A CLOSED vocabulary, like the column
+#: names, and for the same reason: the card binds a tile's value by a field name built
+#: from its key and prints the key as literal text in the page, so a key the provider
+#: invents at run time would bind a tile to nothing while every gate stayed green. Read
+#: by :func:`_stats` and by :func:`panel_card_data`, so the two cannot drift.
+BOARD_STAT_KEYS: Final[tuple[str, ...]] = ("items", "entries", "round")
+
+
 def _stats(view: WorkBoardView, judgment: PipelineBoardJudgment) -> list[PipelineBoardStat]:
     """The metric tiles: a derived count each, with the publisher's gloss if any."""
     conductor = view["conductor"]
-    pairs = (
-        ("items", str(len(view["items"]))),
-        ("entries", str(conductor["entries"])),
-        ("round", str(conductor["round"])),
+    values = {
+        "items": str(len(view["items"])),
+        "entries": str(conductor["entries"]),
+        "round": str(conductor["round"]),
+    }
+    assert set(values) == set(BOARD_STAT_KEYS), (
+        "every tile in BOARD_STAT_KEYS needs a derived value here: "
+        f"{sorted(set(values) ^ set(BOARD_STAT_KEYS))}"
     )
     out: list[PipelineBoardStat] = []
-    for key, value in pairs:
+    for key in BOARD_STAT_KEYS:
         note = judgment["notes"].get(key, "").strip()
-        out.append({"k": key, "v": value, "note": note or UNSAID})
+        out.append({"k": key, "v": values[key], "note": note or UNSAID})
     return out
 
 
@@ -594,3 +614,507 @@ def _strip_unsaid(value: Any) -> Any:
     if isinstance(value, list):
         return [_strip_unsaid(v) for v in value]
     return value
+
+
+# --------------------------------------------------------------------------
+# the other exit: the dynamic dashboard CARD
+# --------------------------------------------------------------------------
+#
+# A card is ``{html, data}`` (``dashboard/dynamic_cards.py``): inert layout plus a FLAT
+# map of text the host binds by ``data-dashboard-field``. So this exit differs from
+# :func:`panel_payload` in three ways that are all forced by the host rather than chosen.
+#
+# It is FLAT, because ``data`` is. It is TEXT, because the host binds a field by setting
+# ``textContent`` -- there is no script in a card to compose a sentence out of parts, so
+# every sentence is composed here. And it is BOUNDED: 24 fields and 4096 data bytes, a
+# card over either cap being dropped whole rather than degraded, which is why an
+# unbounded list cannot become a field per element.
+
+CARD_TEMPLATE_ID: Final[str] = "pipeline_board"
+"""The card page this flattener fills: ``dashboard_templates/pipeline_board.html``.
+
+Not a crew webview template id and deliberately not spelled like one. The drawer's
+per-crew template is selected by slugifying a crew NAME, so its ids carry hyphens; a
+card page is named by its own slug and reached by
+:func:`~kiro_crew.dashboard_templates` path lookup, with no crew in the path at all.
+"""
+
+
+def card_template_path() -> Path:
+    """The card page's file. PACKAGE-RELATIVE, so a wheel and a checkout answer alike.
+
+    Which is also why the page needs its own packaging entry: this path exists in a
+    checkout whether or not the build copied the file, so a page missing from the wheel
+    would render nothing while every gate here stayed green. ``setup.cfg`` and
+    ``MANIFEST.in`` both carry it -- the sdist is built from the manifest and the wheel
+    from the sdist, so an entry in one alone ships a half fix.
+    """
+    return Path(__file__).resolve().parent / "dashboard_templates" / f"{CARD_TEMPLATE_ID}.html"
+
+
+# There is deliberately NO separate "version the card reads" constant.
+#
+# One was here, assigned from :data:`CONTRACT_VERSION`, and it could therefore never differ
+# from the thing it claimed to guard -- so the pin asserting the two equal was vacuous and the
+# mismatch it was supposed to make visible was unreachable through it. The card has no script,
+# so the comparison the drawer template did in JavaScript happens in :func:`_contract_note`
+# against ``CONTRACT_VERSION`` directly.
+#
+# The DISCLOSURE stays, because a mismatch is still reachable from the other side: the value
+# compared is the one carried on the PANEL, and a record built by an older provider and stored
+# on disk reaches the flattener untouched whenever its board is served as published.
+
+#: The host's byte cap, IMPORTED rather than restated.
+#:
+#: A local copy needs a reason to exist, and the obvious one -- keeping the
+#: dashboard package out of its import graph -- does not survive measurement: both consumers
+#: of this module (``agent_panel`` and ``dashboard/handlers/agent_panel``) are reached only
+#: from inside that package, and importing it adds 4 modules and 4 ms on top of what this
+#: module already pulls. So the copy bought nothing and could drift from the number the host
+#: actually enforces, which is the one failure a restated cap has: a producer bounding a card
+#: against a stale limit builds cards the host drops whole.
+#:
+#: There is deliberately no constant for the FIELD cap. ``normalize_card`` spells 24 inline
+#: and exports nothing, so a name here would be a second copy of a number with no importable
+#: source -- and the field count is already asserted the way that matters, by handing the real
+#: card to the real ``normalize_card``.
+MAX_CARD_DATA_BYTES: Final[int] = _HOST_MAX_DATA_BYTES
+
+#: Rows one column may print before the rest are counted instead of listed. A first
+#: attempt only -- :func:`panel_card_data` lowers it until the whole card fits the byte
+#: cap, and says in the row text how many rows it did not print.
+_ROWS_PER_COLUMN: Final[int] = 12
+
+#: Bytes each PUBLISHER-WRITTEN field may take. Every other field on the card is derived
+#: -- a count, a stamp, a state name -- and is short by construction; these three are free
+#: text an agent hands to ``panel_publish``, which caps the whole payload at 64 KB. That is
+#: sixteen times this card's entire data budget, so one long sentence in any of them makes
+#: the card oversized at EVERY row limit: the row ladder below can only shorten rows, so it
+#: retreats to one row per column, still does not fit, and ``normalize_card`` refuses the
+#: card whole. A refused card is not a smaller card -- it is no card, reported to the reader
+#: as though the feature were switched off. So each of these is clipped first, and the clip
+#: says so in the text, exactly as the row retreat states what it did not print.
+_LEDE_BYTES: Final[int] = 400
+_NOTE_BYTES: Final[int] = 120
+_ACTION_BYTES: Final[int] = 200
+#: Each CELL of a row line. ``of`` is publisher-written too -- it arrives from
+#: ``judgment["checks"]`` and :func:`_gate_fraction` admits any ``N/M`` of ASCII digits, so
+#: ``"<2100 digits>/<2100 digits>"`` is a legal publish far under the payload cap and lands
+#: ~4200 bytes in one cell that no rung of the ladder can shorten. ``id`` and ``sub`` come from
+#: the fold rather than a publisher, but an item id is not length-bounded either, so all three
+#: are clipped: the rule is that NO single value can make the card unbuildable, not that the
+#: publisher-written ones cannot.
+_CELL_BYTES: Final[int] = 120
+
+#: What a clipped value ends with. Words rather than an ellipsis: a bare "..." reads as the
+#: publisher's own punctuation, so a reader cannot tell a trimmed sentence from a trailing
+#: one, which is the same ambiguity a silent row prefix creates.
+_CLIPPED: Final[str] = " [trimmed]"
+
+NOT_SAID: Final[str] = "not said"
+"""What :data:`UNSAID` reads as on the card. Words, never a blank and never a zero."""
+
+UNREADABLE: Final[str] = "could not be read"
+"""What a value that WAS published and cannot be read as text reads as.
+
+Its own words, and not folded into :data:`NOT_SAID`. Three states, not two: a field
+nobody filled and a field holding an object are different facts, and a reader who is
+told "not said" about the second will look for a publisher who never existed. The drawer
+template distinguished them; a card with no script still can, because this function is
+where the distinction is made.
+
+A PHRASE rather than the bare adjective "unreadable": shown one word, a reader could not
+tell missing-because-unknown from missing-because-broken, and the word appearing in the
+LEDE was read as a verdict on the whole board rather than on that one sentence. "could not
+be read" says what happened, and says it about this value.
+"""
+
+
+def _text(value: Any) -> str:
+    """One published value as card text: readable text, :data:`NOT_SAID`, or
+    :data:`UNREADABLE`.
+
+    THE ONLY ROUTE a contract value takes into a data field, so the three states cannot
+    be spelled differently in two places. Total by construction: the input is typed, but
+    a panel built from a record that predates this contract reaches here untouched, so an
+    object where a string belongs is a reachable value rather than a theoretical one --
+    and ``str()`` on one whose ``__str__`` raises would take the whole card out.
+    """
+    if value is UNSAID or value == UNSAID or value is None:
+        return NOT_SAID
+    if isinstance(value, bool):
+        # Before the ``int`` arm: ``bool`` is a subclass of it, so a stray ``True``
+        # would otherwise print as ``1`` and read as a count.
+        return UNREADABLE
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, str):
+        return value.strip() or NOT_SAID
+    return UNREADABLE
+
+
+def _clip(text: str, budget: int) -> str:
+    """*text* within *budget* UTF-8 bytes, saying so when it did not fit.
+
+    Cut on a CHARACTER boundary, not a byte one: slicing UTF-8 bytes mid-sequence yields
+    text that is not decodable, and the card's data is JSON. Encoding each prefix would be
+    quadratic on a long value, so the byte budget bounds the character slice first (a
+    character is at most four bytes) and one shrinking loop settles the remainder -- at most
+    a few iterations, since only the multi-byte characters inside that slice can overshoot.
+
+    :data:`NOT_SAID` and :data:`UNREADABLE` pass through untouched by being shorter than
+    every budget; clipping them would be clipping this module's own words.
+    """
+    if len(text.encode("utf-8")) <= budget:
+        return text
+    room = max(0, budget - len(_CLIPPED.encode("utf-8")))
+    body = text[: max(1, room)]
+    while len(body.encode("utf-8")) > room and len(body) > 1:
+        body = body[:-1]
+    return body + _CLIPPED
+
+
+def _count(value: Any) -> int | None:
+    """*value* as a non-negative count, or ``None`` when it is not one."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
+
+
+def _age_words(seconds: int) -> str:
+    hours, rest = divmod(seconds, 3600)
+    minutes, secs = divmod(rest, 60)
+    if hours:
+        return f"{hours}h {minutes}m"
+    return f"{minutes}m {secs}s" if minutes else f"{secs}s"
+
+
+def _when(meta: Any) -> str:
+    """The header's one time phrase: when it was captured, how old it is, stale or not.
+
+    ONE field because the drawer's header made it one text node too: a captured stamp
+    with an age beside it and the word ``stale`` appended reads as a phrase, and splitting
+    it across three fields would spend two of the card's remaining slots on punctuation.
+    """
+    meta = meta if isinstance(meta, dict) else {}
+    captured = _text(meta.get("captured_at"))
+    age = _count(meta.get("age_seconds"))
+    cap = _count(meta.get("stale_after_seconds"))
+    if age is None:
+        # The age is measured from the LOG's newest entry, so a board with no entry has
+        # no age. That is not an age of zero and does not get a number.
+        return f"{captured} · age {NOT_SAID}"
+    words = f"{captured} · {_age_words(age)}"
+    return f"{words} · stale" if cap is not None and age > cap else words
+
+
+def _human_stamp(text: str) -> str:
+    """An ISO timestamp as a reader's date, or *text* unchanged when it is not one.
+
+    Unchanged rather than blank or reformatted-anyway on a value that does not parse: the stamp
+    comes from the log, and printing something a reader can compare to what the log holds
+    matters more than printing something tidy.
+    """
+    try:
+        when = datetime.fromisoformat(text)
+    except ValueError:
+        return text
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return when.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+
+def _since(stamp: Any) -> str:
+    """When this board's first entry landed, as a phrase rather than a bare date."""
+    text = _text(stamp)
+    if text in (NOT_SAID, UNREADABLE):
+        return text
+    # FORMATTED like the header's stamp. A raw ISO value reads as machine output beside
+    # prose, and the reader has no use for the offset or the seconds.
+    return f"first entry {_human_stamp(text)}"
+
+
+def _contract_note(published: Any) -> str:
+    """Whether the board and this card agree on the contract, in words.
+
+    SILENT WHEN THEY AGREE, which is the one field on this card that may be empty.
+
+    It said "contract version 1" on every healthy board, on the reasoning that a card saying
+    nothing about its version cannot be told from one whose disclosure was dropped. That is a
+    real risk and the wrong place to answer it: "contract" is a word about this code's internals
+    and no reader of a status board can parse it, so the cost was permanent jargon in the
+    header of every board that is fine. The risk moves to the suite instead, where a test
+    requires both abnormal cases to produce text -- a guard that cannot be read by the wrong
+    audience.
+
+    Every other field carries a VALUE and is never blank, because there a blank is
+    indistinguishable from a zero. This one carries a NOTICE, and an empty notice means there is
+    nothing to notice.
+    """
+    wrote = _count(published)
+    if wrote is None:
+        return f"the contract version {UNREADABLE}; this card reads {CONTRACT_VERSION}"
+    if wrote != CONTRACT_VERSION:
+        return (
+            f"published by contract version {wrote}; this card reads "
+            f"{CONTRACT_VERSION}, so fields may be missing or mean something else"
+        )
+    return ""
+
+
+def _omitted_note(omitted: Any) -> str:
+    """Entries the fold dropped, as a positive statement either way.
+
+    An item missing from a board is not recoverable by whoever reads it, so the count
+    is stated on the card. Zero says "all entries shown" rather than nothing, because a
+    field bound to the empty string is exactly what a dropped disclosure looks like.
+    """
+    lost = _count(omitted)
+    if lost is None:
+        return f"entries not shown: {UNREADABLE}"
+    return "all entries shown" if lost == 0 else f"{lost} entries not shown"
+
+
+#: The band the headline counts. One of :data:`BOARD_COLUMN_NAMES`, asserted below, so
+#: the most-read number on the card cannot be built from a state no board ever carries.
+_SETTLED_STATE: Final[str] = "accepted"
+
+assert _SETTLED_STATE in BOARD_COLUMN_NAMES, (
+    f"the card headline counts {_SETTLED_STATE!r}, which is not one of "
+    f"{sorted(BOARD_COLUMN_NAMES)}"
+)
+
+
+def _legend(progress: Any) -> str:
+    """The progress line: counts with their denominator, never a percentage.
+
+    Carries ``total``, ``added_since`` and every segment, because those three leaves have
+    no field of their own -- the card's remaining slots went to the board itself, and a
+    legend is how the drawer rendered them too: one text node reading
+    ``2 of 6 accepted · 1 open · +1 this round``.
+
+    A remainder is NAMED rather than absorbed: segments that do not add up to the total
+    mean the board and its bands disagree, and dividing the difference among the bands
+    would hide exactly that.
+    """
+    present = isinstance(progress, dict) and bool(progress)
+    progress = progress if isinstance(progress, dict) else {}
+    total = _count(progress.get("total"))
+    raw = progress.get("segments")
+    bands: list[tuple[str, int]] = []
+    for seg in raw if isinstance(raw, list) else []:
+        if not isinstance(seg, dict):
+            continue
+        n = _count(seg.get("n"))
+        if n is None:
+            continue
+        bands.append((_text(seg.get("name")), n))
+    if total is None:
+        # THREE STATES here too, and the difference matters more than anywhere else on
+        # the card: nothing published is a provider that skipped a required key, while
+        # something unreadable is a board whose own arithmetic cannot be drawn. Told the
+        # same way, a reader chases the wrong half.
+        return f"progress {UNREADABLE}" if present else f"progress {NOT_SAID}"
+    if total == 0:
+        # A well-formed board with nothing counted. An empty board, not a broken one,
+        # and it must not reach the malformed reading above.
+        return "no items yet"
+    settled = next((n for name, n in bands if name == _SETTLED_STATE), 0)
+    parts = [f"{settled} of {total} {_SETTLED_STATE}"]
+    parts += [f"{n} {name}" for name, n in bands if name != _SETTLED_STATE and n]
+    counted = sum(n for _name, n in bands)
+    if counted < total:
+        parts.append(f"{total - counted} unaccounted")
+    added = _count(progress.get("added_since"))
+    if added:
+        # "this round", not "since": the count is items whose round is the conductor's
+        # current one, which on a one-round board is every item.
+        parts.append(f"+{added} this round")
+    return " · ".join(parts)
+
+
+def _column_head(column: Any, total: int | None) -> str:
+    """One column's heading: its name and its share of the board."""
+    column = column if isinstance(column, dict) else {}
+    cards = column.get("cards")
+    held = len(cards) if isinstance(cards, list) else None
+    name = _text(column.get("name"))
+    if held is None:
+        return f"{name} · {UNREADABLE}"
+    # WITH ITS DENOMINATOR. A bare "3" over a column says nothing about whether that is
+    # most of the board or a corner of it.
+    return f"{name} · {held} of {total}" if total is not None else f"{name} · {held}"
+
+
+def _column_rows(column: Any, *, limit: int, actions: bool) -> str:
+    """One column's cards, as newline-separated text for a ``pre-line`` block.
+
+    ONE FIELD for an unbounded list, which is the whole reason this is text rather than
+    a field per card: a board may hold 256 items and the host drops a card over 24 fields
+    WHOLE. A prefix is printed and the rest is COUNTED in the same text, so a reader is
+    never shown part of a board as if it were all of it.
+    """
+    column = column if isinstance(column, dict) else {}
+    raw = column.get("cards")
+    cards = raw if isinstance(raw, list) else []
+    if not cards:
+        # "no items", not "empty": one adjective could not be told from a value that is
+        # genuinely zero, which is the same confusion the absence words above address.
+        return "no items"
+    lines: list[str] = []
+    for card in cards[:limit]:
+        card = card if isinstance(card, dict) else {}
+        cells = " · ".join(_clip(_text(card.get(key)), _CELL_BYTES) for key in ("id", "sub", "of"))
+        lines.append(cells)
+        if actions:
+            # The action belongs to ONE item, under that item's own row. Printed once for
+            # the column instead, only the first item's sentence survives and every other
+            # item needing a person goes unmentioned.
+            you = card.get("you")
+            if you is not UNSAID and you != UNSAID and you is not None:
+                # CLIPPED, like every other publisher-written value: one very long action
+                # sentence would otherwise be shortenable only by the ladder's second
+                # retreat, which drops EVERY item's action rather than trimming the one
+                # that does not fit.
+                lines.append(f"    -> {_clip(_text(you), _ACTION_BYTES)}")
+    rest = len(cards) - limit
+    if rest > 0:
+        lines.append(f"    +{rest} of {len(cards)} not shown")
+    return "\n".join(lines)
+
+
+def _stat_field(key: str) -> str:
+    """The field name a metric's value is bound by. The metric's KEY reaches the card
+    here rather than as a value of its own: a tile's label is the same on every board
+    ever published, so it is literal text in the page and this is what ties the two."""
+    return f"stat_{key}"
+
+
+def panel_card_data(panel: PipelineBoardPanel) -> dict[str, str]:
+    """*panel* as the ``data`` half of a dynamic dashboard card.
+
+    THE FLATTENING RULE, in four lines, because ``data`` is flat and a dotted name is not
+    even legal -- ``normalize_card``'s ``_FIELD_NAME`` admits
+    ``[a-zA-Z][a-zA-Z0-9_-]{0,47}`` only:
+
+    1. A leaf's path becomes its field name with ``_`` for ``.``: ``meta.name`` is
+       ``meta_name``, ``omitted`` is ``omitted``.
+    2. A list whose length is fixed by a CLOSED vocabulary indexes into one field group
+       per element: ``columns`` is :data:`BOARD_COLUMN_NAMES`, so ``columns[0]`` is
+       ``column_0_``. ``stats`` is keyed by its own ``k`` instead of by position, so a
+       tile's label can be literal text in the page.
+    3. A list whose length is UNBOUNDED collapses to one text field on its parent, its
+       elements newline-separated: a board holds up to
+       :data:`~kiro_crew.work_vocab.WORK_STORED_ITEM_LIMIT` items and the host drops a
+       card over 24 fields whole, so ``columns[0].cards`` is ``column_0_rows``.
+    4. A leaf the page renders as part of a SENTENCE has no field of its own and reaches
+       the card inside the finished sentence: ``meta.age_seconds`` is in ``meta_when``,
+       ``progress.total`` is in ``progress_legend`` and in every ``column_N_head``. A
+       card has no script to compose a sentence, so composition happens here.
+
+    Every value is words. :data:`UNSAID` becomes :data:`NOT_SAID`, a published value that
+    cannot be read as text becomes :data:`UNREADABLE`, and no field is ever the empty
+    string -- the host binds a field it was not given to ``""``, so a blank is what a
+    DROPPED field looks like and must not also be what a real value looks like.
+
+    Bounded before it returns: the row limit is lowered, and then the per-item action
+    lines dropped, until the card fits :data:`MAX_CARD_DATA_BYTES`. Both retreats are
+    stated in the card's own text.
+    """
+    meta = _mapping_of(panel, "meta")
+    progress = _mapping_of(panel, "progress")
+    total = _count(progress.get("total"))
+    raw_columns = panel.get("columns")
+    columns = raw_columns if isinstance(raw_columns, list) else []
+
+    fixed: dict[str, str] = {
+        "meta_name": _text(meta.get("name")),
+        "meta_revision": f"revision {_text(meta.get('revision'))}",  # spelt out, so it is not read as a different number from the metric tile below
+        "meta_when": _when(meta),
+        "omitted": _omitted_note(panel.get("omitted")),
+        "contract_note": _contract_note(panel.get("contract_version")),
+        "lede": _clip(_text(panel.get("lede")), _LEDE_BYTES),
+        "progress_legend": _legend(progress),
+        # NAMED, not printed bare. The drawer's footer put this stamp on the page alone,
+        # where it reads as a date with no claim attached -- a viewer cannot tell the
+        # board's first entry from its last, from a capture time, or from a deadline. The
+        # header already carries a stamp, so an unlabelled second one is worse than none.
+        "since": _since(panel.get("since")),
+    }
+    # MATCHED BY NAME over the closed vocabulary, never indexed by position into what
+    # arrived. Position looks equivalent because the provider emits the four states in
+    # order, but a board missing one column then shifts every later column's field one
+    # place and prints one state's items under another state's heading -- a wrong board
+    # rather than an incomplete one, and nothing on the page says so. A state no column
+    # carries gets an empty column, which is the true reading.
+    by_name = {
+        str(column.get("name") or ""): column for column in columns if isinstance(column, dict)
+    }
+    ordered = [by_name.get(name, {"name": name, "cards": []}) for name in BOARD_COLUMN_NAMES]
+    for index, column in enumerate(ordered):
+        fixed[f"column_{index}_head"] = _column_head(column, total)
+    # KEYED BY THE CLOSED VOCABULARY, not by what arrived. Writing a field per stat the
+    # payload happens to carry is the one mistake this card cannot survive: the host binds
+    # a field it was NOT given to the empty string, so a tile whose key went missing
+    # renders as a blank number -- indistinguishable from a real zero, on the three
+    # figures a reader checks first. Every field the page binds is written here, every
+    # time, and a tile with no value in the payload says so in words.
+    raw_stats = panel.get("stats")
+    found = {
+        str(stat.get("k") or ""): stat
+        for stat in (raw_stats if isinstance(raw_stats, list) else [])
+        if isinstance(stat, dict)
+    }
+    for key in BOARD_STAT_KEYS:
+        tile: Any = found.get(key) or {}
+        # The value is derived (a count), the NOTE is the publisher's gloss -- so only the
+        # note can be long enough to matter, and only it is clipped.
+        fixed[_stat_field(key)] = _text(tile.get("v"))
+        fixed[f"{_stat_field(key)}_note"] = _clip(_text(tile.get("note")), _NOTE_BYTES)
+
+    # The retreats, in order of what they cost a reader: printing fewer rows loses whole
+    # items, dropping the action lines loses what a person must DO about items that are
+    # still listed. Fewer rows goes first because the count of what was not printed
+    # travels with it, and a dropped action leaves no trace on the row it belonged to.
+    # CLAMPED to the longest column, not started at the cap. A limit above every column's
+    # length prints the same rows as that length does, so starting at the cap spends a full
+    # rebuild of all four columns on each step that cannot change the output -- invisible
+    # at a cap of 12 and ~100k rebuilds per panel read the moment anyone raises it. The
+    # first limit that can change anything is the longest column.
+    longest = max(
+        (len(c.get("cards") or []) for c in ordered if isinstance(c.get("cards"), list)),
+        default=0,
+    )
+    start = max(1, min(_ROWS_PER_COLUMN, longest))
+    smallest = dict(fixed)
+    for actions in (True, False):
+        for limit in range(start, 0, -1):
+            smallest = dict(fixed)
+            for index, column in enumerate(ordered):
+                smallest[f"column_{index}_rows"] = _column_rows(
+                    column, limit=limit, actions=actions
+                )
+            if _data_bytes(smallest) <= MAX_CARD_DATA_BYTES:
+                return smallest
+    # One row per column, no actions, and still over: every remaining byte is in a field
+    # this function cannot shorten without inventing a value, so return the smallest card
+    # it can build honestly and let ``normalize_card`` refuse it. A refused card leaves
+    # the previous one in place; a silently truncated sentence would not.
+    return smallest
+
+
+def _mapping_of(panel: Any, key: str) -> dict[str, Any]:
+    """*panel*'s *key* as a mapping, or an empty one.
+
+    The input is typed, so mypy proves the provider's own output has these keys. This
+    guard is for the OTHER caller: a record written before this contract existed reaches
+    the flattener untouched, and a non-mapping there would raise inside the one function
+    whose whole job is to be total.
+    """
+    value = panel.get(key) if isinstance(panel, dict) else None
+    return value if isinstance(value, dict) else {}
+
+
+def _data_bytes(data: dict[str, str]) -> int:
+    """Keys plus values, UTF-8 -- the same sum ``normalize_card`` caps."""
+    return sum(len(k.encode("utf-8")) + len(v.encode("utf-8")) for k, v in data.items())

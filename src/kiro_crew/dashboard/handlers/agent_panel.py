@@ -26,6 +26,7 @@ import asyncio
 import logging
 import time
 from collections.abc import Mapping
+from functools import lru_cache
 from typing import Any, Final, cast
 
 from aiohttp import web
@@ -528,6 +529,37 @@ async def api_agent_panel_publish(request: web.Request) -> web.Response:
     # only says "re-read this slug", and the read route re-applies the ownership
     # check to whoever asks.
     state.broadcast_ws("panel_published", {"slug": slug})
+    # A PUBLISH is the board-changing event, so it is what produces the card.
+    #
+    # Building it only on the drawer read left the card with no producer of its own: the one
+    # surface that created it is the surface this work exists to replace, so once the drawer's
+    # per-crew rendering goes, nothing would ever mint a board card and nobody reading the
+    # dashboard could tell an absent board from a crew that published nothing. A publish is
+    # also the moment the answer actually changed, which a read is not.
+    #
+    # Rebuilt through the SAME reader the drawer uses rather than from the response above: the
+    # response carries three display fields, while the card needs the derived board, which
+    # means the same fold read and the same provider. Failing to build it must not fail the
+    # publish -- the panel is already stored, and the next read rebuilds the card -- so the
+    # whole step is best-effort like the history append above, and it EVICTS when the record
+    # this publish just wrote carries no board.
+    #
+    # ``owner_key`` comes off that record rather than being recomputed, so the card is built
+    # for the crew whose publish this is. The slot resolution and the fold read both belong in
+    # a worker thread; the store call belongs on the loop.
+    published_owner = str(record.get("crew_key") or "")
+
+    def _rebuild_card() -> tuple[str, dict[str, Any] | None]:
+        panel_slot = _panel_slot(KiroCrewConfig.load(), crew_name, slug)
+        return panel_slot, _panel_record(panel_slot, slug, published_owner)
+
+    try:
+        card_slot, card_record = await asyncio.to_thread(_rebuild_card)
+        _publish_derived_card(state, card_slot, card_record)
+    except Exception:
+        logger.warning(
+            "could not refresh the board card for crew %s after publish", slug, exc_info=True
+        )
     # The data is not echoed: it is the crew's own input, and a response that
     # repeats a 64 KB payload back into the tool result burns the context this
     # feature exists to save.
@@ -660,6 +692,32 @@ def _with_board_numbers(slot: str, record: dict[str, Any]) -> dict[str, Any]:
         now_epoch=time.time(),
     )
     out = dict(record)
+    # THE CARD, built here because this is the one place the board exists: the fold has
+    # been read, the publisher's judgment validated and the provider run, so the only
+    # thing left is the flattening -- and doing it anywhere else would mean reading the
+    # fold a second time.
+    #
+    # WITHHELD from the drawer response like ``board`` is, and handed to the dynamic-card
+    # store by the async caller rather than from here: this function runs in a worker
+    # thread and the store is loop-owned, so the hop belongs at the boundary that already
+    # exists. No model is called on this path and none can be: ``panel_card_data`` is
+    # arithmetic over a TypedDict.
+    try:
+        out["card"] = {
+            "html": _card_page(),
+            "data": pipeline_board_contract.panel_card_data(panel),
+        }
+    except OSError:
+        # A page the build did not ship, or one that cannot be read. The CARD is optional and
+        # the PANEL is what this route owes its caller, so this degrades to no card rather than
+        # to a 500 on somebody's drawer -- the record is returned without a ``card`` key, which
+        # the publisher reads as "evict", the same as any other board that is not there.
+        #
+        # Caught HERE rather than left to the caller: ``_panel_record`` runs outside
+        # ``_read_and_compose``'s own ``try``, and the route catches only ``MemberSlugError``
+        # and ``ValueError``, so an OSError from the page read would have escaped as a 500 --
+        # which is what ``_card_page``'s docstring already claimed does not happen.
+        logger.warning("the board card page could not be read for slot %s", slot, exc_info=True)
     # A SIBLING key, and ``data`` is left exactly as published.
     #
     # The two surfaces want different things from this record. The document renders the
@@ -677,6 +735,81 @@ def _with_board_numbers(slot: str, record: dict[str, Any]) -> dict[str, Any]:
         # reaches the operator, who is the party that can act on it.
         out["contract_replaced"] = replaced
     return out
+
+
+def _publish_derived_card(state: Any, slot_key: str, record: Mapping[str, Any] | None) -> None:
+    """Hand the board's card to the dynamic-card store, if this record carries one.
+
+    ON THE EVENT LOOP, after the worker hop: the store is loop-owned and
+    :func:`_with_board_numbers` runs in a thread, so this is the boundary that already
+    exists rather than a new threadsafe call added inside it.
+
+    TOTAL. A card that cannot be stored -- no store bound yet, a slot that is not running,
+    a payload the host refuses -- must not turn somebody's drawer read into a 500: the
+    panel response is what this route owes the caller, and the card is a side effect of
+    having built the board anyway.
+    """
+    card = (record or {}).get("card")
+    cards = getattr(state, "_dynamic_cards", None)
+    make_store = getattr(state, "ensure_dynamic_card_store", None)
+    if cards is None and isinstance(card, dict) and callable(make_store):
+        # THE STORE IS CREATED FOR A DERIVED CARD TOO, and this is what makes the "a derived
+        # card is free, so the cost opt-in does not gate it" claim actually true. The store
+        # itself was only ever constructed on the first `set_dynamic_cards_enabled(True)`, so
+        # availability depended on TOGGLE HISTORY: an owner who never enabled model-written
+        # cards got no board either, and one who enabled them once and turned them off kept
+        # getting one. Same feature, opposite answers, decided by a switch neither answer is
+        # about.
+        #
+        # ``enabled=False`` is the whole point: this constructs the container and starts no
+        # worker, spends no attempt and calls no model. The model path stays exactly as
+        # opt-in as it was.
+        cards = make_store()
+    if not isinstance(card, dict):
+        # NO CARD MEANS EVICT, never "leave things as they are". This record is the
+        # authoritative answer for the slot, so a record without a board says the board is
+        # gone -- the crew republished to another template, or its work fold holds no board
+        # one. Returning early kept the PREVIOUS card in the store and the card route went on
+        # serving it as `status: published`, which is a stale board presented as current: the
+        # one state a status surface must never reach, because a reader cannot tell it from a
+        # live one.
+        if cards is not None:
+            cards.forget_derived(slot_key)
+        return
+    if cards is None:
+        # The store is created on the owner's opt-in to model-generated cards. A derived
+        # card does not need that opt-in, but it does need somewhere to live -- and
+        # creating the store from a READ would be this module deciding a cost question
+        # that belongs to the owner. So the board's card appears once the store exists;
+        # named in the pull request body as the one thing this seam does not do.
+        return
+    slot = getattr(state, "_slots", {}).get(slot_key)
+    if slot is None:
+        return
+    try:
+        cards.publish_derived(slot, card)
+    except Exception:
+        logger.warning(
+            "could not store the derived board card for slot %s", slot_key, exc_info=True
+        )
+
+
+@lru_cache(maxsize=1)
+def _card_page() -> str:
+    """The card page's markup, read once per process.
+
+    CACHED because it is shipped package data that cannot change under a running gateway,
+    and this runs on every drawer read. Unlike the crew webview templates there is no
+    operator override directory for a card page, so there is nothing a cache could hide:
+    the one thing an override would need -- a re-read -- is the thing that does not exist
+    here.
+
+    A page missing from the build raises ``OSError``, which :func:`_with_board_numbers`
+    catches so the record comes back with no card. Deliberately NOT left to the route: that
+    catches only ``MemberSlugError`` and ``ValueError``, so an escaping ``OSError`` would be
+    a 500 on a drawer read -- a packaging fault taking out the panel along with the card.
+    """
+    return pipeline_board_contract.card_template_path().read_text(encoding="utf-8")
 
 
 def _is_work_board(view: Any) -> bool:
@@ -835,7 +968,11 @@ _PANEL_SERVED_KEYS = frozenset(
 #  * ``contract_replaced`` is the mark left on the record when a free-shape payload
 #    was overridden by the log's numbers; it has no renderer, so the operator's
 #    warning is what reaches a person, not a response field nothing reads.
-_PANEL_WITHHELD_KEYS = frozenset({"crew_key", "schema", "board", "contract_replaced"})
+#  * ``card`` is the dynamic dashboard card ``_with_board_numbers`` builds from the same
+#    board. It goes to the CARD STORE, which the dashboard reads on its own route, so
+#    serving it here too would publish one board through two contracts and let a viewer
+#    see the two disagree.
+_PANEL_WITHHELD_KEYS = frozenset({"crew_key", "schema", "board", "card", "contract_replaced"})
 
 
 def _panel_meta(record: Mapping[str, Any]) -> dict[str, Any]:
@@ -961,12 +1098,16 @@ async def api_member_panel(request: web.Request) -> web.Response:
     # legacy file, which is keyed on the slug only and therefore cannot be selected.
     mine = agent_panel.crew_key(member)
 
-    def _resolve_and_read() -> tuple[dict[str, Any] | None, str | None, bool]:
+    def _resolve_and_read() -> tuple[str, dict[str, Any] | None, str | None, bool]:
         cfg = KiroCrewConfig.load()
-        return _read_and_compose(_panel_slot(cfg, member, slug), slug, mine)
+        # The slot key comes BACK from the worker hop, because the card store is keyed on
+        # it and resolving it a second time out here would load the config twice and could
+        # answer differently if it changed between the two reads.
+        slot = _panel_slot(cfg, member, slug)
+        return (slot, *_read_and_compose(slot, slug, mine))
 
     try:
-        record, html, render_failed = await asyncio.to_thread(_resolve_and_read)
+        slot_key, record, html, render_failed = await asyncio.to_thread(_resolve_and_read)
     except (MemberSlugError, ValueError):
         # The crew name has no addressable member space, so it has no DM slot and
         # therefore no panel. Reported as the empty state rather than a refusal: from
@@ -992,6 +1133,22 @@ async def api_member_panel(request: web.Request) -> web.Response:
         # and naming the other crew would disclose a colliding name the viewer of
         # this drawer has no other way to learn.
         return web.json_response({"panel": None, "html": None})
+    # AFTER the ownership refusal above, never beside the read.
+    #
+    # ``_published_record`` answers with ``agent_panel.read(slug)`` unfiltered when the
+    # fold holds nothing for this owner, and that file is keyed on the SLUG alone -- so a
+    # colliding crew's record, or an unowned one, reaches this far. ``_panel_record``
+    # gates only on the template id, so such a record still builds a card out of its
+    # ``lede``, its per-item action sentences and its crew name. Stored before the check
+    # above, that card is then served by the owner-only dashboard-card route, and the text
+    # THIS route just refused to disclose is read off the other surface instead. The
+    # refusal is what decides whether this record may be seen at all, so nothing derived
+    # from it may leave the request before it.
+    #
+    # Deliberately BEFORE the render/compose branches below: a card is built from the fold
+    # and the record, not from the drawer template, so a crew whose template is broken
+    # still has a board worth showing.
+    _publish_derived_card(request.app["state"], slot_key, record)
     if render_failed:
         # A published panel that cannot be composed is temporarily unavailable,
         # matching the write path's 503 and giving the drawer a retryable error.
