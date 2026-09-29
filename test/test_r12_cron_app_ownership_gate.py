@@ -245,3 +245,49 @@ async def test_fire_gate_follows_the_app_toggle_for_a_rest_made_job(
     monkeypatch.setattr(manager, "app_enabled_state", lambda name: enabled)
     reason = mcp_cron._vet_app_owner_enabled(svc.get_job(job_id))
     assert (reason is not None) is refused, reason
+
+
+@pytest.mark.parametrize("route", list(ROUTES))
+@pytest.mark.parametrize(("target", "outcome"), [("a", "allowed"), ("owner", "denied")])
+async def test_each_decision_writes_one_audit_row_naming_the_app(
+    svc, grant_crons, sel_calls, route, target, outcome
+) -> None:
+    ids = await _seed(svc)
+    method, path, body, op = ROUTES[route]
+    await _request(svc, APP_A, method, path.format(id=ids[target]), body)
+    rows = [
+        c.kwargs for c in sel_calls.log_api_access.call_args_list if c.kwargs.get("operation") == op
+    ]
+    assert rows == [
+        {
+            "caller": f"app:{APP_A}",
+            "operation": op,
+            "outcome": outcome,
+            "source": "dashboard",
+            "resources": ids[target],
+        }
+    ], rows
+
+
+@pytest.mark.parametrize(("foreign", "outcome"), [(False, "allowed"), (True, "denied")])
+async def test_batch_decision_writes_one_audit_row_naming_the_app(
+    svc, grant_crons, sel_calls, foreign, outcome
+) -> None:
+    ids = await _seed(svc)
+    batch = [ids["a"], ids["owner"]] if foreign else [ids["a"]]
+    await _request(svc, APP_A, "DELETE", "/api/crons", {"ids": batch})
+    rows = [
+        c.kwargs
+        for c in sel_calls.log_api_access.call_args_list
+        if c.kwargs.get("operation") == "crons.batch_delete"
+    ]
+    assert rows == [
+        {
+            "caller": f"app:{APP_A}",
+            "operation": "crons.batch_delete",
+            "outcome": outcome,
+            "source": "dashboard",
+            # A refusal names the id that decided it; an allow names the batch.
+            "resources": ids["owner"] if foreign else ids["a"],
+        }
+    ], rows

@@ -43,7 +43,10 @@ from kiro_crew.dashboard.cron_inject import (
     inject_cron_result_to_dashboard,
     move_cron_job_tab,
 )
-from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+from kiro_crew.dashboard.handlers._shared import (
+    _owner_denial_response,
+    require_owner_dashboard_request,
+)
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
 from kiro_crew.dashboard.state import DashboardState, SlotOrigin, note_crew_log_class
 from kiro_crew.executors import discovery_executor
@@ -682,7 +685,13 @@ async def _refuse_foreign_app_job(
     lists them), but only for its OWN jobs: the ones whose host-written
     ``created_by`` is its ``app:<name>`` stamp. A job without that stamp -- the
     person's, another app's, or one that does not exist -- is refused with the
-    owner gate's own 403, so a missing id reads the same as a foreign one.
+    owner gate's own 403 (``_owner_denial_response``), so a missing id reads the
+    same as a foreign one.
+
+    Both outcomes are SEL-audited under ``app:<name>``, the caller that actually
+    decided the outcome. ``require_owner_dashboard_request`` is not reused for
+    the denial: it records ``request["user"]``, which for an app token is the
+    person the token was minted for, not the app acting.
 
     Every id is checked before the caller acts on any, so a batch that names one
     foreign job changes nothing. The lookup is cache-only: ``created_by`` never
@@ -698,10 +707,29 @@ async def _refuse_foreign_app_job(
     # ``kiro_crew.apps.cron_sdk`` runs ``kiro_crew.apps.__init__`` and its cycle.
     from kiro_crew.apps.cron_sdk import app_owner_name
 
-    for job_id in job_ids:
-        job = state.crons.get_job(job_id)
-        if job is None or app_owner_name(getattr(job, "created_by", None)) != app:
-            return await require_owner_dashboard_request(request, operation)
+    refused = next(
+        (
+            job_id
+            for job_id in job_ids
+            if app_owner_name(getattr(state.crons.get_job(job_id), "created_by", None)) != app
+        ),
+        None,
+    )
+    # One SEL row per decision, allow and deny alike. A bare enqueue: SEL is
+    # warmed at gateway startup (sel.warm_sel_singleton); guarded because a
+    # FAILED warm leaves construction to retry here.
+    try:
+        _sel().log_api_access(
+            caller=f"app:{app}",
+            operation=operation,
+            outcome="allowed" if refused is None else "denied",
+            source="dashboard",
+            resources=",".join(job_ids) if refused is None else refused,
+        )
+    except Exception:  # pragma: no cover - audit must never change the outcome
+        logger.debug("SEL audit for app cron %s failed", operation, exc_info=True)
+    if refused is not None:
+        return _owner_denial_response(request)
     return None
 
 
