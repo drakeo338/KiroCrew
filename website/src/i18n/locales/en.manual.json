@@ -4445,7 +4445,7 @@
         "sign_in_hint": "Open Settings → Overview → Kiro sign-in and sign in again, then send your message again.",
         "session_start_repeat_hint": "The agent session has failed to start more than once in a row, so resuming would only run the same start again. Restart the gateway from a terminal with {{command}}, then send your message again.",
         "capabilities_changed": "This crewmate's custom agent file changed outside Customize, so new chats cannot start. Open Customize, review and save the change, then start a new chat.",
-        "open_capabilities": "Open Capabilities"
+        "open_capabilities": "Open Customize"
       },
       "crewLog": {
         "section_status": "Status",

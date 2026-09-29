@@ -10409,7 +10409,7 @@
         "feature_request_form_hint": "Il tuo utilizzo mensile è esaurito — invia invece la richiesta su GitHub con questo modulo. Questo modulo salta l’agente: apre il modulo delle issue di GitHub che compili tu e non consuma nulla del tuo utilizzo mensile.",
         "session_start_repeat_hint": "La sessione dell’agente non è riuscita ad avviarsi più volte di seguito, quindi riprendere ripeterebbe solo lo stesso avvio. Riavvia il gateway da un terminale con {{command}} e reinvia il messaggio.",
         "capabilities_changed": "Il file dell’agente personalizzato di questo compagno è cambiato fuori da Customize, quindi le nuove chat non possono avviarsi. Apri Customize, controlla e salva la modifica, poi avvia una nuova chat.",
-        "open_capabilities": "Apri Capabilities"
+        "open_capabilities": "Apri Customize"
       },
       "folderPanel": {
         "clear_search": "Cancella ricerca",

@@ -10119,7 +10119,7 @@
         "feature_request_form_hint": "本月用量已用完 — 可以改为通过此表单在 GitHub 上提交请求。此表单不经过代理：它会打开 GitHub 的 Issue 表单，由你自行填写，不消耗本月用量。",
         "session_start_repeat_hint": "代理会话已连续多次启动失败，继续只会再次执行同一次启动。请在终端运行 {{command}} 重启 gateway，然后重新发送消息。",
         "capabilities_changed": "该队友的自定义代理文件在 Customize 之外发生了变化，因此无法启动新对话。打开 Customize，查看并保存更改，然后启动新对话。",
-        "open_capabilities": "打开 Capabilities"
+        "open_capabilities": "打开 Customize"
       },
       "folderPanel": {
         "clear_search": "清除搜索",
