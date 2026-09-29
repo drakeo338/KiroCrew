@@ -868,25 +868,42 @@ class TestSubdirGates:
         assert registry._contained_join(tmp_path, "sub") is None
 
     @requires_symlinks
-    def test_contained_join_degrades_to_none_on_a_symlink_loop(self, tmp_path):
+    def test_contained_join_answers_a_symlink_loop_without_raising(self, tmp_path):
         # A real loop, not a faked OSError. The callers that re-check containment
         # after a third-party script wrote to the checkout need a value, never a
-        # raise, and never a path outside the root. What that value is depends on
-        # the kernel: POSIX non-strict `Path.resolve` reports ELOOP as
-        # RuntimeError for the link and for anything under it, so both joins
-        # degrade to None. Windows raises on the self-pointing link ITSELF (the
-        # resolve's stat fails, so the join degrades to None) but resolves a child
-        # beneath it lexically, without an error, to a path under the root.
+        # raise -- and a self-pointing link has exactly two answers: `None` when
+        # path resolution reports the loop (it fails closed, like every other
+        # escape), or the lexical join under the root when it does not, since a
+        # link that points at itself resolves to no other place. WHICH of the two
+        # comes back is the kernel's to decide: POSIX path resolution reports the
+        # loop as ELOOP, while Windows reparse-point resolution answers it
+        # differently from one host image to the next (a stat failure on one, the
+        # lexical path on another). The ELOOP verdict is pinned by the POSIX-only
+        # sibling below; this test asserts the closed set every host shares, so a
+        # third answer -- a raise, a path anywhere else -- fails on every host.
         root = tmp_path / "root"
         root.mkdir()
         os.symlink("pkg", str(root / "pkg"))
-        for subdir, windows_answers_a_path in (("pkg", False), ("pkg/app.json", True)):
+        for subdir in ("pkg", "pkg/app.json"):
             joined = registry._contained_join(root, subdir)
-            if sys.platform == "win32" and windows_answers_a_path:
-                assert joined is not None
-                assert joined.is_relative_to(root.resolve())
-            else:
-                assert joined is None
+            assert joined in (None, root.resolve() / subdir), (subdir, joined)
+
+    @requires_symlinks
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="a self-pointing link is ELOOP under POSIX path resolution; Windows "
+        "reparse-point resolution has no such verdict to pin",
+    )
+    def test_contained_join_degrades_to_none_on_a_symlink_loop(self, tmp_path):
+        # POSIX non-strict `Path.resolve` reports ELOOP as RuntimeError for the
+        # link and for anything under it, so both joins degrade to None: a loop
+        # is an escape that resolves nowhere, and it fails closed like every
+        # other escape.
+        root = tmp_path / "root"
+        root.mkdir()
+        os.symlink("pkg", str(root / "pkg"))
+        for subdir in ("pkg", "pkg/app.json"):
+            assert registry._contained_join(root, subdir) is None, subdir
 
 
 # ---------------------------------------------------------------------------
@@ -3204,6 +3221,31 @@ class TestRunAppBuild:
         assert not preview.parent.exists()
         assert [p.name for p in (home / "app-sources").iterdir()] == ["demo"]
 
+    async def _judge_a_deep_self_link(self, tmp_path, monkeypatch, depth):
+        """Declare `B -> .` plus ``backend.entryPoint: "B/B/.../B/server.py"`` with
+        *depth* components and put it through the three judgements the install
+        makes of a declared entry -- the runtime's own file check, the build gate
+        and the final gate -- timed together. Returns the runtime's refusal (``""``
+        when it accepts the path), the build result, the final refusal and the
+        elapsed seconds."""
+        from kiro_crew.apps.manifest import file_entry_point_refusal
+
+        (tmp_path / "B").symlink_to(Path("."))
+        (tmp_path / "requirements.txt").write_text("fastapi\n", encoding="utf-8")
+        deep = "/".join(["B"] * depth) + "/server.py"
+        spawned = _fake_sandbox(monkeypatch, [_FakeProc(returncode=0)])
+        started = time.monotonic()
+        runtime_refusal = file_entry_point_refusal(deep, tmp_path)
+        result = await registry._run_app_build(
+            tmp_path, "demo", [], manifest=_asgi_backend(deep), self_managed=False
+        )
+        final = registry._desktop_build_refusal(
+            tmp_path, _asgi_backend(deep), self_managed=False, final=True
+        )
+        elapsed = time.monotonic() - started
+        assert spawned == []  # nothing planned either way
+        return runtime_refusal, result, final, elapsed
+
     @requires_symlinks
     @pytest.mark.timeout(60)
     @pytest.mark.parametrize("depth", [30, 60])
@@ -3216,35 +3258,60 @@ class TestRunAppBuild:
         derived from the install's own copy, which keeps `B` as one link and never
         walks through it, and from the runtime's own file check, which the
         kernel resolves in one pass -- so the judgment is linear in the path's
-        components, and it says what the spawn would meet. On POSIX, 30 links
-        resolve to the root's `server.py` (waived) and 60 exceed the kernel's
-        symlink budget (refused here, loudly, instead of failing at spawn); on
-        Windows a reparse point carries no per-walk budget, so both depths resolve
-        and both are waived."""
-        from kiro_crew.apps.manifest import file_entry_point_refusal
-
-        (tmp_path / "B").symlink_to(Path("."))
-        (tmp_path / "requirements.txt").write_text("fastapi\n", encoding="utf-8")
-        deep = "/".join(["B"] * depth) + "/server.py"
-        runtime_accepts = file_entry_point_refusal(deep, tmp_path) == ""
-        # The verdict below is asserted against the runtime's own answer on every
-        # platform, and that answer is pinned per platform: which depths the
-        # runtime accepts is the kernel's symlink budget. POSIX stops at 40 links,
-        # so 30 resolves and 60 is refused; Windows resolves a reparse point without
-        # a per-walk budget, so both depths resolve to the root's `server.py`.
-        assert runtime_accepts is (depth == 30 or sys.platform == "win32")
-        spawned = _fake_sandbox(monkeypatch, [_FakeProc(returncode=0)])
-        started = time.monotonic()
-        result = await registry._run_app_build(
-            tmp_path, "demo", [], manifest=_asgi_backend(deep), self_managed=False
+        components, and on every host it comes back within the bound as one of
+        the verdicts each judge owns, never as an exception or an ordinary
+        install error. The final gate derives its verdict from the runtime's own
+        file check (`_requirements_owned_by_the_runtime` asks
+        `file_entry_point_refusal` of the install's preview copy), so on every
+        host the two agree: what the runtime accepts the final pass waives, what
+        it refuses the final pass refuses. WHICH way a 60-link path goes belongs
+        to the kernel -- the POSIX symlink budget refuses it (pinned by the
+        sibling below), while Windows reparse-point resolution has no per-walk
+        budget and answers from one host image to the next by the absolute path
+        length instead -- so no single verdict is asserted here."""
+        runtime_refusal, result, final, elapsed = await self._judge_a_deep_self_link(
+            tmp_path, monkeypatch, depth
         )
-        elapsed = time.monotonic() - started
-        assert result["ok"] is runtime_accepts, result
+        # Each judge answers with a verdict it owns -- never an escape, since the
+        # link points at its own directory, and never an ordinary install error.
+        assert runtime_refusal in ("", "not found", "path resolution failed"), runtime_refusal
+        assert result["ok"] or result["code"] == registry.DESKTOP_BUILD_STEP_UNSUPPORTED, result
+        assert final in ("", registry._DESKTOP_BUILD_REFUSAL)
+        # The final pass says exactly what the runtime's own file check says: the
+        # waiver it grants is the provisioning the runtime would perform, and the
+        # refusal is the entry the spawn would refuse -- whatever the kernel made
+        # of the link.
+        assert (final == "") is (runtime_refusal == ""), (runtime_refusal, final)
+        # The two gate passes differ in one respect only -- the build pass waives an
+        # entry that is merely absent, the final pass refuses it -- so a refusal
+        # from the build pass is always the final pass's desktop refusal.
+        assert result["ok"] or final == registry._DESKTOP_BUILD_REFUSAL, (result, final)
         assert elapsed < 20, f"the desktop gate took {elapsed:.1f}s on a {depth}-component path"
-        assert spawned == []  # nothing planned either way
-        final = registry._desktop_build_refusal(
-            tmp_path, _asgi_backend(deep), self_managed=False, final=True
+
+    @requires_symlinks
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="the symlink budget a deep self-link exhausts is POSIX ELOOP; Windows "
+        "reparse-point resolution has no per-walk budget to pin",
+    )
+    @pytest.mark.timeout(60)
+    @pytest.mark.parametrize("depth", [30, 60])
+    @pytest.mark.asyncio
+    async def test_the_desktop_gate_says_what_the_spawn_meets_at_the_kernel_symlink_budget(
+        self, tmp_path, monkeypatch, bundled_interpreter, depth
+    ):
+        """A POSIX kernel budgets the links one resolution may follow (40 on
+        Linux, 32 on macOS): 30 links through `B -> .` resolve to the root's
+        `server.py` (waived) and 60 exceed the budget (refused here, loudly,
+        instead of failing at spawn). Both gate passes say exactly what the
+        runtime's own file check says, because a budget the kernel refuses is a
+        layout no script window lifts, not an absent file the build pass waives."""
+        runtime_refusal, result, final, _ = await self._judge_a_deep_self_link(
+            tmp_path, monkeypatch, depth
         )
+        runtime_accepts = runtime_refusal == ""
+        assert runtime_accepts is (depth == 30), runtime_refusal
+        assert result["ok"] is runtime_accepts, result
         assert (final == "") is runtime_accepts
 
     @pytest.mark.asyncio
