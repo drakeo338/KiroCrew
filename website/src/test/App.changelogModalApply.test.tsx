@@ -39,11 +39,12 @@ vi.mock('../components/MarkdownRenderer', () => ({ default: ({ content }: { cont
 // `statusOverride` is mutable on purpose: the /api/status fetch lands AFTER mount
 // and writes the same slice the preloaded state seeds, so a fixed fetch payload
 // silently clobbers whatever a test set up and every case would test one shape.
-const { COMMAND, statusOverride, armUpdate, armStatus } = vi.hoisted(() => ({
+const { COMMAND, statusOverride, armUpdate, armStatus, setAutoUpdate } = vi.hoisted(() => ({
   COMMAND: 'python3 -m pip install --upgrade kiro-crew',
   statusOverride: { value: {} as Record<string, unknown> },
   armUpdate: vi.fn(),
   armStatus: vi.fn(),
+  setAutoUpdate: vi.fn(),
 }))
 
 vi.mock('../api/client', () => ({
@@ -68,7 +69,7 @@ vi.mock('../api/client', () => ({
     chatMode: vi.fn().mockResolvedValue({}),
     listInstances: vi.fn().mockResolvedValue({ instances: [], warm_set_cap: 5 }),
     changelog: vi.fn().mockResolvedValue({ content: '## [0.2.0rc9]\n- a new entry\n' }),
-    setAutoUpdate: vi.fn().mockResolvedValue({}),
+    setAutoUpdate,
     armUpdate,
     armStatus,
   },
@@ -125,6 +126,8 @@ describe('changelog modal apply affordance', () => {
       ok: true, armed: true, expires_in: 600, approve_command: 'kirocrew update approve',
     })
     armStatus.mockReset()
+    setAutoUpdate.mockReset()
+    setAutoUpdate.mockResolvedValue({})
     armStatus.mockResolvedValue({
       armed: true, expires_in: 590, approve_command: 'kirocrew update approve',
     })
@@ -185,6 +188,34 @@ describe('changelog modal apply affordance', () => {
 
     expect(await screen.findByText('Update Now')).toBeTruthy()
     expect(screen.queryByTestId('modal-update-command')).toBeNull()
+  })
+
+  it.each([
+    ['command', false],
+    ['', true],
+  ])('shows the auto-update toggle only when updates are not command-managed (%j)', async (managedBy, shown) => {
+    renderWithProviders(<App />, {
+      route: '/chat',
+      preloadedState: wheelState({ update_managed_by: managedBy }),
+    })
+
+    await screen.findByTestId('modal-update-command')
+    const label = i18nT('app.auto_update_on_restart')
+    expect(screen.queryByText(label) !== null).toBe(shown)
+    const note = i18nT('pages.settings.aboutPanel.updates_managed_by_policy')
+    expect(screen.queryByText(note) !== null).toBe(!shown)
+  })
+
+  it('reverts the auto-update toggle and shows the error when saving fails', async () => {
+    setAutoUpdate.mockRejectedValueOnce(new Error('zzq save refused'))
+    renderWithProviders(<App />, { route: '/chat', preloadedState: wheelState() })
+
+    const toggle = await screen.findByRole('switch', { name: i18nT('app.auto_update_on_restart') })
+    expect(toggle).toHaveAttribute('aria-checked', 'true')
+    fireEvent.click(toggle)
+
+    expect(await screen.findByText('zzq save refused')).toBeInTheDocument()
+    expect(toggle).toHaveAttribute('aria-checked', 'true')
   })
 
   it('offers nothing to click when there is no verdict yet', async () => {

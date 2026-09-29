@@ -1679,6 +1679,9 @@ export default function App() {
   const canApplyUpdate = useAppSelector(s => s.dashboard.status?.update_can_apply)
   const canArmUpdate = useAppSelector(s => s.dashboard.status?.update_can_arm)
   const updateCommand = useAppSelector(s => s.dashboard.status?.update_command) || ''
+  // A policy-pinned command (Builder Toolbox) owns updates here and also
+  // updates on its own, so the popup's switch cannot turn updates off.
+  const updatesManagedByCommand = useAppSelector(s => s.dashboard.status?.update_managed_by) === 'command'
   const updateTargetVersion = useAppSelector(
     s => s.dashboard.status?.update_latest_version_display
       || s.dashboard.status?.update_latest_version
@@ -2794,6 +2797,7 @@ export default function App() {
   // changelog is going to show" — the startup-video gate needs the second one.
   const [changelogDecided, setChangelogDecided] = useState(false)
   const [autoUpdate, setAutoUpdate] = useState(true)
+  const [autoUpdateError, setAutoUpdateError] = useState('')
   const [fullChangelog, setFullChangelog] = useState('')
   const [showFull, setShowFull] = useState(false)
   const [devMode, setDevMode] = useState(() => localStorage.getItem('mc-dev-mode') === '1')
@@ -4693,11 +4697,16 @@ export default function App() {
             ) : (
               <div className="text-sm text-muted py-4 text-center"><CheckCircle className="lucide-inline" /> {i18nT('app.you_re_on_the_latest_version')}</div>
             )}
-            <div className="flex items-center justify-between mt-4 pt-3 border-t border-border">
-              <span className="text-[13px] text-muted">{i18nT('app.auto_update_on_restart')}</span>
-              <Toggle checked={autoUpdate} label={i18nT('app.auto_update_on_restart')}
-                onChange={async next => { setAutoUpdate(next); await api.setAutoUpdate(next) }} />
-            </div>
+            {updatesManagedByCommand ? (
+              <p className="text-[13px] text-muted mt-4 pt-3 border-t border-border">{i18nT('pages.settings.aboutPanel.updates_managed_by_policy')}</p>
+            ) : (
+              <div className="flex items-center justify-between mt-4 pt-3 border-t border-border">
+                <span className="text-[13px] text-muted">{i18nT('app.auto_update_on_restart')}</span>
+                <Toggle checked={autoUpdate} label={i18nT('app.auto_update_on_restart')}
+                  onChange={async next => { setAutoUpdate(next); setAutoUpdateError(''); try { await api.setAutoUpdate(next) } catch (e) { setAutoUpdate(!next); setAutoUpdateError(String(e instanceof Error ? e.message : e)) } }} />
+              </div>
+            )}
+            {autoUpdateError && <ErrorNotice className="mt-3" askAgent title={i18nT('pages.overview.agentCfgTab.save_failed')} message={autoUpdateError} onHandoff={() => setShowChangelog(false)} />}
             <div className="mt-3 pt-3 border-t border-border">
               <button className="text-[13px] text-muted cursor-pointer hover:text-text transition-colors bg-transparent border-none p-0 font-body" onClick={async () => {
                 if (!showFull) { if (!fullChangelog) { const d = await api.changelog(); setFullChangelog(d.content || '') }; setShowFull(true) } else { setShowFull(false) }
