@@ -73,6 +73,11 @@ export interface MessageRenderContext {
    *  chat-core/composer/selectionActions). Absent = Copy only. */
   onQuote?: (text: string, rect: DOMRect) => void
   onAsk?: (text: string) => void
+  /** Quote a WHOLE row into the host's next send (`chat-core/composer/messageQuote`).
+   *  A host capability, like `onQuote`: absent, no row offers Quote and no
+   *  bubble arms its context menu. Receives the row's own fields, so the
+   *  renderer never has to know what the host stores. */
+  onQuoteMessage?: (role: 'user' | 'assistant', content: string, ts?: string, mid?: string) => void
   /** Drop mcp_oauth banners a Connections card already owns. */
   hideCardOwnedOAuth: boolean
   /** tool_call_ids whose call a policy or hook blocked. */
@@ -384,6 +389,15 @@ export interface AssistantBubbleOptions {
  * Returns null for a say-nothing row (bare U+200B): invisible-only content
  * would draw as an empty bubble.
  */
+/** The row's Quote handler, bound to its own fields; undefined while the row
+ *  streams (nothing final to quote) or when the host offers no Quote. */
+export function quoteMessageFor(m: ChatMessage, ctx: MessageRenderContext, role: 'user' | 'assistant'): (() => void) | undefined {
+  const fn = ctx.onQuoteMessage
+  if (!fn || m.role === 'streaming' || !m.content.trim()) return undefined
+  const mid = typeof m.meta?.mid === 'string' && m.meta.mid ? m.meta.mid : undefined
+  return () => fn(role, m.content, m.ts, mid)
+}
+
 export function renderAssistantBubble(
   m: ChatMessage,
   ctx: MessageRenderContext,
@@ -438,6 +452,7 @@ export function renderAssistantBubble(
       }
       bubbleClassName={bubbleClassName}
       onReplyInThread={isStreaming ? undefined : replyInThreadFor(m, ctx)}
+      onQuoteMessage={quoteMessageFor(m, ctx, 'assistant')}
     />
   )
   // The column's child is the bubble itself unless this message has a thread
@@ -501,6 +516,7 @@ export const defaultMessageRenderers: readonly MessageRenderer[] = [
           timestampTitle={fmtMessageTimeFull(m.ts)}
           renderContent={(c, mt) => renderUserContent({ content: c, meta: mt, onFileOpen: ctx.onFileOpen })}
           onReplyInThread={replyInThreadFor(m, ctx)}
+          onQuoteMessage={quoteMessageFor(m, ctx, 'user')}
         />
       )
       // The bubble alone on every surface without a thread footer to draw, so

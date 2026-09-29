@@ -51,6 +51,8 @@ import { confirmedDelivered } from '../utils/sendDelivery'
 import { sendTurn } from '../chat-core/transport/sendTurn'
 import { applySteerReceipt } from '../chat-core/transport/steerReceipt'
 import { useSelectionQuoteAsk } from '../chat-core/composer/selectionActions'
+import { useMessageQuote } from '../chat-core/composer/useMessageQuote'
+import { prependQuote, type MessageQuote } from '../chat-core/composer/messageQuote'
 import { addNotification, removeNotificationByTs } from '../store/notificationsSlice'
 import { onTerminalReady, sendToTerminalSession, sendRawToTerminalSession, getTerminalShell, getTerminalFenceShells } from '../utils/terminalRegistry'
 import { runInTerminalText, RUN_IN_TERMINAL_READY_DEADLINE_MS, RUN_IN_TERMINAL_OPENING_GRACE_MS } from '../utils/fenceShell'
@@ -488,14 +490,15 @@ function unresumableNoticeMessage(r: { key: string; title: string; surface: stri
  *              message. That reader may never have pinned anything, so naming a
  *              pin would report an action they did not take.
  */
-type PendingJumpOrigin = 'pin' | 'earlier' | 'link'
+type PendingJumpOrigin = 'pin' | 'earlier' | 'link' | 'quote'
 
 /** SINGLE writer for the not-found copy, so a new origin cannot reach the reader
  *  wearing another origin's wording. */
 const jumpUnavailableNotice = (origin: PendingJumpOrigin): string =>
   origin === 'earlier' ? i18nT('components.chatPane.earlier_messages_unavailable')
     : origin === 'link' ? i18nT('pages.chat.deepLink.message_unavailable')
-      : i18nT('pages.chat.pins.message_unavailable')
+      : origin === 'quote' ? i18nT('pages.chat.quoteCard.message_unavailable')
+        : i18nT('pages.chat.pins.message_unavailable')
 
 /** What the composer has staged besides text (file paths and session-ref keys),
  *  for the create-carry check in ChatPage: only a text-only draft carries. */
@@ -2171,6 +2174,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // Session references staged by dragging a session from the list onto this
   // pane. Serialized as LINKS on send — never the referenced transcript.
   const [pendingSessions, setPendingSessions] = useState<SessionRef[]>([])
+  // A whole message staged as the quote of the next send (one at a time,
+  // slot-scoped). `send` consumes it; the render callback stages it.
+  const messageQuote = useMessageQuote({ slot: activeSlot, revealComposer })
   const pendingSessionsRef = useRef(pendingSessions)
   // Render-current staged resources for the slot-change effect. The three refs
   // above sync in effects declared AFTER that effect, so within one commit it
@@ -2679,7 +2685,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // App launches own only their explicit text, not the composer's staged data.
     const widgetOrigin = !isolated && !!widgetPrefillRef.current && raw.includes(widgetPrefillRef.current)
     if (!isolated) widgetPrefillRef.current = null
-    if (!raw && (isolated || (!pendingFilesRef.current.length && !pendingSessionsRef.current.length))) return false
+    // A staged quote alone is a sendable message (the quote IS the text).
+    const sentQuote: MessageQuote | null = isolated || optionText ? null : messageQuote.consume('').quote
+    if (!raw && !sentQuote && (isolated || (!pendingFilesRef.current.length && !pendingSessionsRef.current.length))) return false
 
     // Sending while STREAMING dictation is live ends the dictation (see
     // `useComposerVoice.disarmForSend` for the full rationale — streaming only,
@@ -2753,6 +2761,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     if (kq && !optionText) {
       knowledgeFetchRef.current.searchKnowledge(kq)
       setInput('')
+      // Not a send: the staged quote stays staged for the real one.
+      messageQuote.restage(sentQuote)
       return false
     }
 
@@ -2794,8 +2804,13 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // is no collapsed form to preserve in the bubble, so what the user sees is
     // exactly what was sent. Appending (never splicing) also means paste-token
     // ranges found earlier in the string are untouched.
-    const txt = appendSessionRefLinks(typedTxtDirs, sentSessionRefs)
-    const displayTxt = appendSessionRefLinks(typedDisplayTxt, sentSessionRefs)
+    // The quoted message opens the text, for the agent and for the bubble alike
+    // (`messageQuote.ts`): the same block in both, so the bubble's card can
+    // strip exactly what was sent.
+    const typedTxtQuoted = sentQuote ? prependQuote(typedTxtDirs, sentQuote) : typedTxtDirs
+    const typedDisplayQuoted = sentQuote ? prependQuote(typedDisplayTxt, sentQuote) : typedDisplayTxt
+    const txt = appendSessionRefLinks(typedTxtQuoted, sentSessionRefs)
+    const displayTxt = appendSessionRefLinks(typedDisplayQuoted, sentSessionRefs)
     // Expand paste tokens for the LLM; UI-facing displayTxt keeps the tokens
     // intact so the user bubble can render them as clickable chips.
     const activePastes = isolated ? [] : pasteBlocksRef.current
@@ -3028,6 +3043,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     if (filePaths.length) meta.files = filePaths
     if (dirPaths.length) meta.dirs = dirPaths
     if (bubblePastes.length) meta.pastes = bubblePastes
+    if (sentQuote) meta.quote = sentQuote
     if (knowledgeBlock) meta.knowledge = { items: knowledgeBlock.items.length, tokens: knowledgeBlock.totalTokens, titles: knowledgeBlock.items.map(i => i.title), content: knowledgeBlock.items.map(i => ({ title: i.title, text: i.content.slice(0, 2000) })) }
     if (widgetOrigin) meta.origin = 'widget'
     // A client-generated correlation ID so the server echo can be matched
@@ -3110,6 +3126,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       saveDrafts()
       if (onScreenNow) {
         setInput(textBack); setPasteBlocks(pastesBack); setPendingSessions(refsBack)
+        messageQuote.restage(sentQuote)
       }
       // Aliases come back with the text they describe -- MERGE, never
       // overwrite, so a file picked while the send was in flight keeps its
@@ -3289,7 +3306,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // activeSlot is left in deps as a harmless no-op: dropping it churns the
     // array for no behavior change (the ref is always current regardless).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeSlot, dispatch, connected])
+  }, [activeSlot, dispatch, connected, messageQuote.consume, messageQuote.restage])
 
   // Submit inline document comments to the session the file was opened from,
   // not the currently-active one. If the user switched sessions while the
@@ -5025,6 +5042,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // surface is the activity panel's `side` tab; the /side slash command opens
   // it through the same `openActivityToTab('side')` bridge.
   const openSideChat = useCallback(() => { dispatch(openActivityToTab('side')) }, [dispatch])
+  // Whole-message quote: stage the row (`useMessageQuote`). The sent card's
+  // jump (`handleJumpToQuote`) is defined beside the pinned-message jump it rides.
+  const quoteWholeMessage = messageQuote.quoteMessage
   const { onQuote: handleQuote, onAsk: handleAsk, quoteFlight: flyingQuote, endQuoteFlight } = useSelectionQuoteAsk({
     slot: activeSlot,
     setInput,
@@ -6179,6 +6199,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // cannot drift into pin wording while the paging case reports the truth.
     setPinNotice(jumpUnavailableNotice(origin))
   }, [activeSlot, cursorIsForActiveSlot, jumpToLoadedPinnedMessage, slotHasMore, slotOldestIndex])
+  // A sent quote card jumps to the quoted row through the pinned-message jump,
+  // which already pages older history in when the target is off the loaded window.
+  const handleJumpToQuote = useCallback((q: MessageQuote) => {
+    if (!q.ts) return
+    handleJumpToPinnedMessage(q.ts, q.mid, { origin: 'quote' })
+  }, [handleJumpToPinnedMessage])
   // The pins list's own entry point, so pin copy is claimed HERE by a caller that
   // means it rather than inherited by one that passed nothing.
   const handleJumpToPin = useCallback((messageTs: string, mid?: string) => {
@@ -6558,6 +6584,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               mode={mode}
               pinned={m.ts && (m.meta as Record<string, unknown> | undefined)?.mid ? isPinned((m.meta as Record<string, unknown>).mid as string) : false}
               onTogglePin={m.ts && (m.meta as Record<string, unknown> | undefined)?.mid ? () => handleTogglePinForMessage((m.meta as Record<string, unknown>).mid as string, m.ts!, 'user', m.content) : undefined}
+              onQuoteMessage={activeSlot && !activeSlotRemoteBound ? () => quoteWholeMessage('user', m.content, m.ts, messageId) : undefined}
+              onJumpToQuote={handleJumpToQuote}
             />
           ) : isInject ? (
             (() => {
@@ -6590,7 +6618,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
             })()
           ) : (
             <div className="flex flex-col gap-0">
-              <AssistantMessage revealActions={!!activeSlot && voiceRecoverySlot === activeSlot} suppressSteerAck={turnHadPolicyBlock(messagesRef.current, i)} prevUserText={prevUserTextFor(messagesRef.current, i)} shareEnabled={socialShareOn} linkPreviews={linkPreviewsOn} content={m.content} isStreaming={isStreaming} isRegenerating={regenerating && i === lastTextIdxRef.current} onFileOpen={handleFileOpen} onFolderOpen={handleFolderOpen} onArtifactOpen={handleArtifactOpen} onSessionOpen={selectSessionTab} sessions={connected ? sessionTitles : undefined} activeSession={activeSlot || undefined} onQuote={handleQuote} onAsk={handleAsk} slotRunning={slotRunning} planTaskId={planTaskId} timestamp={chatConfig.showTimestamps ? msgTime : undefined} timestampTitle={msgTimeFull} messageTs={m.ts} slotKey={activeSlot || undefined} slotTitle={activeSlotTitle} mode={mode} fileChanges={(m.meta as Record<string, unknown> | undefined)?.file_changes as FileChangeEntry[] | undefined} fileChangesOmittedFiles={(m.meta as Record<string, unknown> | undefined)?.file_changes_omitted_files} blockedLinks={(m.meta as Record<string, unknown> | undefined)?.blocked_links} redactions={(m.meta as Record<string, unknown> | undefined)?.redactions} showRedactionCoach={!!m.ts && m.ts === redactionCoachTs} turnStats={chatConfig.showTurnStats ? (m.meta as Record<string, unknown> | undefined)?.turn_stats as TurnStats | undefined : undefined} decisionsStrip={decisionStripFieldOf(m)} onOpenDiff={handleOpenDiff} fileChipStyle={chatConfig.fileChipStyle} artifactPaths={artifactPaths} pinned={m.ts && (m.meta as Record<string, unknown> | undefined)?.mid ? isPinned((m.meta as Record<string, unknown>).mid as string) : false} onTogglePin={m.ts && (m.meta as Record<string, unknown> | undefined)?.mid ? () => handleTogglePinForMessage((m.meta as Record<string, unknown>).mid as string, m.ts!, 'assistant', m.content) : undefined} showFooter={(() => {
+              <AssistantMessage revealActions={!!activeSlot && voiceRecoverySlot === activeSlot} suppressSteerAck={turnHadPolicyBlock(messagesRef.current, i)} prevUserText={prevUserTextFor(messagesRef.current, i)} shareEnabled={socialShareOn} linkPreviews={linkPreviewsOn} content={m.content} isStreaming={isStreaming} isRegenerating={regenerating && i === lastTextIdxRef.current} onFileOpen={handleFileOpen} onFolderOpen={handleFolderOpen} onArtifactOpen={handleArtifactOpen} onSessionOpen={selectSessionTab} sessions={connected ? sessionTitles : undefined} activeSession={activeSlot || undefined} onQuote={handleQuote} onAsk={handleAsk} slotRunning={slotRunning} planTaskId={planTaskId} timestamp={chatConfig.showTimestamps ? msgTime : undefined} timestampTitle={msgTimeFull} messageTs={m.ts} slotKey={activeSlot || undefined} slotTitle={activeSlotTitle} mode={mode} fileChanges={(m.meta as Record<string, unknown> | undefined)?.file_changes as FileChangeEntry[] | undefined} fileChangesOmittedFiles={(m.meta as Record<string, unknown> | undefined)?.file_changes_omitted_files} blockedLinks={(m.meta as Record<string, unknown> | undefined)?.blocked_links} redactions={(m.meta as Record<string, unknown> | undefined)?.redactions} showRedactionCoach={!!m.ts && m.ts === redactionCoachTs} turnStats={chatConfig.showTurnStats ? (m.meta as Record<string, unknown> | undefined)?.turn_stats as TurnStats | undefined : undefined} decisionsStrip={decisionStripFieldOf(m)} onOpenDiff={handleOpenDiff} fileChipStyle={chatConfig.fileChipStyle} artifactPaths={artifactPaths} pinned={m.ts && (m.meta as Record<string, unknown> | undefined)?.mid ? isPinned((m.meta as Record<string, unknown>).mid as string) : false} onTogglePin={m.ts && (m.meta as Record<string, unknown> | undefined)?.mid ? () => handleTogglePinForMessage((m.meta as Record<string, unknown>).mid as string, m.ts!, 'assistant', m.content) : undefined} onQuoteMessage={activeSlot && !activeSlotRemoteBound && !isStreaming ? () => quoteWholeMessage('assistant', m.content, m.ts, messageId) : undefined} showFooter={(() => {
                 // Show footer on the last assistant message of each completed turn
                 if (isStreaming) return false
                 // Find next message after this one that's assistant, user, or streaming
@@ -6707,7 +6735,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       bubble,
     ])
     return { renderers, fallback: bubble }
-  }, [slotRunning, handleFileOpen, handleArtifactOpen, selectSessionTab, sessionTitles, connected, handleFork, handleQuote, handleAsk, chatConfig, activeSlot, regenerating, activeSlotRemoteBound, handleRegenerate, handleEditResend, slotHasMore, loadingOlder, cursorIsForActiveSlot, slotOldestIndex, handleLoadEarlier, renderUserContentCb, highlightTs, activeSlotTitle, mode, embedded, popout, handleOpenDiff, handlePlanFromHere, planTaskId, artifactPaths, automationId, toolDisclosure, setToolDisclosureFor, linkPreviewsOn, socialShareOn, voiceRecoverySlot, handleSubagentPanelOpen, isPinned, handleTogglePinForMessage, showRefusedPress, transcriptHot, revealAppInPanel, continuable, interrupted, continuing, handleContinue, openModelPickerFromError, openDefaultModelSetting, openKiroSignIn, openMemberCapabilities, handleFolderOpen, handleSpeak, handleApplyPlan, mcpAppPanel, redactionCoachTs])
+  }, [slotRunning, handleFileOpen, handleArtifactOpen, selectSessionTab, sessionTitles, connected, handleFork, handleQuote, handleAsk, quoteWholeMessage, handleJumpToQuote, chatConfig, activeSlot, regenerating, activeSlotRemoteBound, handleRegenerate, handleEditResend, slotHasMore, loadingOlder, cursorIsForActiveSlot, slotOldestIndex, handleLoadEarlier, renderUserContentCb, highlightTs, activeSlotTitle, mode, embedded, popout, handleOpenDiff, handlePlanFromHere, planTaskId, artifactPaths, automationId, toolDisclosure, setToolDisclosureFor, linkPreviewsOn, socialShareOn, voiceRecoverySlot, handleSubagentPanelOpen, isPinned, handleTogglePinForMessage, showRefusedPress, transcriptHot, revealAppInPanel, continuable, interrupted, continuing, handleContinue, openModelPickerFromError, openDefaultModelSetting, openKiroSignIn, openMemberCapabilities, handleFolderOpen, handleSpeak, handleApplyPlan, mcpAppPanel, redactionCoachTs])
 
   const renderMessage = useCallback((i: number, m: ChatMessage) => {
     // Key identity rules (clientTs preference + streaming->assistant role
@@ -8990,6 +9018,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               }}
               pendingSessions={pendingSessions}
               onRemoveSessionRef={unstageSessionRef}
+              pendingQuote={messageQuote.pendingQuote}
+              onRemoveQuote={messageQuote.clearQuote}
               // A folder pick is complete once ChatInput inserts its `@rel/`
               // token — the chip derives from the text, so there is no state
               // to stage here. Files stay list-backed (uploads have no token)

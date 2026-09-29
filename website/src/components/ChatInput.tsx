@@ -151,6 +151,8 @@ import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuIte
 import { i18nT } from '../i18n/t'
 import { fmtDateFields, fmtPercent } from '../i18n/format'
 import SessionRefStrip from './SessionRefStrip'
+import QuoteCard from '../pages/chat/QuoteCard'
+import type { MessageQuote } from '../chat-core/composer/messageQuote'
 import type { SessionRef } from '../utils/sessionRefs'
 import { activeElementIsEditable, isEditableTarget } from '../utils/editableTarget'
 import { Glass } from './Glass'
@@ -502,6 +504,13 @@ interface ChatInputProps {
    *  Rendered as chips above the textarea, the same treatment as attachments.
    *  Serialized as links (never transcripts) when the message is sent. */
   pendingSessions?: SessionRef[]
+  /** A whole message staged as the quote of the next send (`messageQuote.ts`).
+   *  Drawn INSIDE the text area, above the caret, as a card with a remove
+   *  control -- part of what is being written, not a strip of chrome. The host
+   *  owns the state and folds it into the send; ChatInput only shows and
+   *  unstages it. A staged quote counts as a draft for the send button. */
+  pendingQuote?: MessageQuote | null
+  onRemoveQuote?: () => void
   /** Unstage a session reference by its session key */
   onRemoveSessionRef?: (key: string) => void
   /** Show macOS-only buttons (screenshot) */
@@ -994,6 +1003,8 @@ function ChatInput({
   onRemoveDir,
   pendingSessions = [],
   onRemoveSessionRef,
+  pendingQuote = null,
+  onRemoveQuote,
   isMac = false,
   onDrop,
   onDragOver,
@@ -1746,10 +1757,10 @@ function ChatInput({
     // The message leaves the hand here, on every path (Enter, Send, steer) --
     // but only when there is one: an Enter on an empty composer reaches onSend
     // (which drops it) and must stay as silent as the Send button it disables.
-    if (value.trim() || pendingFiles.length || pendingSessions.length) haptic('light')
+    if (value.trim() || pendingFiles.length || pendingSessions.length || pendingQuote) haptic('light')
     if (steerNow && onSteer) onSteer(steerAuto && !flip ? { auto: true } : undefined)
     else onSend()
-  }, [disabled, voiceTranscribing, busyChoiceAvailable, steerOnly, steerActive, steerAuto, onSteer, onSend, value, pendingFiles.length, pendingSessions.length])
+  }, [disabled, voiceTranscribing, busyChoiceAvailable, steerOnly, steerActive, steerAuto, onSteer, onSend, value, pendingFiles.length, pendingSessions.length, pendingQuote])
   // Every stop button in the row goes through this, so the tap and the truthiness
   // checks on `onStop` (which decide whether a button renders at all) stay apart.
   const stopWithTap = useCallback(() => {
@@ -3391,6 +3402,10 @@ function ChatInput({
   }, [onUploadFiles])
 
   const hasSessionRefs = pendingSessions.length > 0
+  // A staged quote is a draft for the send gates below, but NOT a strip: it
+  // lives inside the text area, so it must not join `stripsMounted`, whose
+  // measurement waits for a strip box that would never appear.
+  const hasQuote = !!pendingQuote
   const [fileStripRef, fileStripH] = useMeasuredHeight<HTMLDivElement>()
   const [sessionStripRef, sessionStripH] = useMeasuredHeight<HTMLDivElement>()
   /** True when the composer holds something a send would carry.
@@ -4415,6 +4430,11 @@ function ChatInput({
           />
         )}
         <div className={`relative ${showDictation || voiceHoldMode ? 'sr-only' : ''} ${manualHeight !== null ? 'flex-1 min-h-0 flex flex-col' : ''}`}>
+        {/* The staged quote sits inside the text area, above the caret: the
+            quoted message is the first thing the reply says, so it is drawn
+            where the reply is written rather than in the strips above (those
+            are attachments -- things sent ALONG with the text). */}
+        {pendingQuote && <QuoteCard quote={pendingQuote} variant="composer" onRemove={onRemoveQuote} />}
         {lexicalComposer && !lexicalLoadFailed ? (
           <ComposerLoadBoundary onError={() => setLexicalLoadFailed(true)}>
             <Suspense fallback={
@@ -5056,7 +5076,7 @@ function ChatInput({
                 WCAG 2.5.3 (Label in Name). `title` carries the longer
                 explanation for hover.
               */}
-              {continuable && onContinue && !value.trim() && !pendingFiles.length && !hasSessionRefs ? (
+              {continuable && onContinue && !value.trim() && !pendingFiles.length && !hasSessionRefs && !hasQuote ? (
                 <button
                   className="primary h-8 px-3 rounded-full bg-accent text-accent-fg border-none inline-flex items-center gap-1.5 text-[12px] font-medium leading-none cursor-pointer hover:bg-accent-hover disabled:opacity-30 disabled:cursor-not-allowed transition-all"
                   onClick={onContinue}
@@ -5072,7 +5092,7 @@ function ChatInput({
               <button
                 className="primary w-8 h-8 rounded-full bg-accent text-accent-fg border-none flex items-center justify-center cursor-pointer hover:bg-accent-hover disabled:opacity-30 disabled:cursor-not-allowed transition-all"
                 onClick={fireComposer}
-                disabled={(!value.trim() && !pendingFiles.length && !hasSessionRefs) || disabled || optimizing || !connected}
+                disabled={(!value.trim() && !pendingFiles.length && !hasSessionRefs && !hasQuote) || disabled || optimizing || !connected}
                 aria-label={i18nT('components.chatInput.send')}
                 {...offlineProps(connected, 'send', 'Send')}
               >
