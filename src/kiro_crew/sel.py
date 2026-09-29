@@ -760,16 +760,8 @@ class SecurityEventLog:
             # inside: a ``trust`` replaced after that screen cannot redirect this
             # open into another tree, where both writers' screens would pass while
             # they locked different inodes.
-            flags = (
-                (os.O_CREAT if lock_may_create else 0)
-                | os.O_RDWR
-                | getattr(os, "O_NOFOLLOW", 0)
-                | getattr(os, "O_BINARY", 0)
-            )
-            if lock_dir_fd is not None:
-                fd = os.open(lock_path.name, flags, 0o600, dir_fd=lock_dir_fd)
-            else:
-                fd = os.open(lock_path, flags, 0o600)
+            flags = os.O_RDWR | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+            fd = _open_lock_sidecar(lock_path, flags, create=lock_may_create, dir_fd=lock_dir_fd)
         finally:
             if lock_dir_fd is not None:
                 # The descriptor's whole job was to anchor the open above; the
@@ -3634,6 +3626,34 @@ def sel_is_warm() -> bool:
     """
     inst = SecurityEventLog._instance
     return inst is not None and bool(getattr(inst, "_initialized", False))
+
+
+def _open_lock_sidecar(path: Path, flags: int, *, create: bool, dir_fd: int | None) -> int:
+    """Open (creating when *create*) the chain-lock sidecar, race-safe on Darwin.
+
+    A nonexclusive ``O_CREAT`` open can return ``ENOENT`` on Darwin when it loses
+    the create race to a sibling -- measured under a hygiene sweep as
+    the first two writers on a fresh log directory (the background writer's first
+    flush and a ``prune``) racing to create this sidecar, one of them failing
+    with a bare ``'security_events.lock'`` and the prune being skipped. The same
+    shape as :mod:`platform_log_append`'s decision-log create. So the name is
+    created EXCLUSIVELY first and, when a sibling already made it, opened without
+    ``O_CREAT``; a leaf that vanishes between those two calls is a genuine
+    ``ENOENT`` and is left to the caller. Descriptor-relative when *dir_fd* is
+    given, so the pin taken in ``_chain_lock_target`` still anchors the open.
+    """
+
+    def _open(extra: int) -> int:
+        if dir_fd is not None:
+            return os.open(path.name, flags | extra, 0o600, dir_fd=dir_fd)
+        return os.open(path, flags | extra, 0o600)
+
+    if not create:
+        return _open(0)
+    try:
+        return _open(os.O_CREAT | os.O_EXCL)
+    except FileExistsError:
+        return _open(0)
 
 
 def _pin_lock_dir(path: Path) -> int | None:

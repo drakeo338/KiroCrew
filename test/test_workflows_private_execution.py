@@ -154,6 +154,23 @@ def world(monkeypatch, event_loop, tmp_path):
         event_loop.run_until_complete(sessions.close_all())
         for store in stores.values():
             release_cached_memory_store(store)
+        # The first ``WorkflowService.start`` on this builder triggers skill
+        # discovery, which starts the loader's ``skill-catalog-refresh`` worker.
+        # ``SkillsLoader.close`` wakes that worker to exit but does not join by
+        # design (a daemon walk may outlive a short-lived loader), so without the
+        # join here every test in this file -- and every importer of ``world`` --
+        # left one thread parked on ``_catalog_wakeup.wait()`` for the life of
+        # the pytest worker (measured: three per parametrized file).
+        # Joining with a budget is what proves the loop observed ``close()``.
+        builder.skills.close()
+        catalog_worker = builder.skills._catalog_worker
+        if catalog_worker is not None:
+            catalog_worker.join(timeout=_CATALOG_WORKER_JOIN_SECS)
+
+
+#: How long the ``world`` finalizer waits for the catalog worker to observe
+#: ``close()``. The worker exits on its next wake, so this is a ceiling.
+_CATALOG_WORKER_JOIN_SECS = 5.0
 
 
 #: Wall budget for ONE run awaited through ``finished()``, sized from CI rather
