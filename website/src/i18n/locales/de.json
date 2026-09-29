@@ -7558,7 +7558,7 @@
       "creating": "{{name}} wird erstellt…",
       "error_name_taken": "Einen Crew-Kameraden namens {{name}} gibt es schon. Wähle einen anderen Namen oder öffne ihn auf der Seite Crew Members.",
       "chip_taken": "gibt es schon",
-      "error_name_shape": "Nur Buchstaben, Ziffern, - und _; Anfang und Ende ein Buchstabe oder eine Ziffer.",
+      "error_name_unusable": "Dieser Name kann nicht verwendet werden. Wähle einen anderen.",
       "error_create_failed": "{{name}} konnte nicht erstellt werden. Prüfe die Verbindung und versuche es noch einmal.",
       "error_create_unknown": "{{name}} wurde vielleicht erstellt, vielleicht nicht: Der Server hat nicht geantwortet. Prüfe die Seite Crew Members, bevor du es erneut versuchst; steht {{name}} dort, lege die Aufgabe auf der Zeitplan-Seite an.",
       "save_failed": "Diese Einführung konnte nicht als erledigt markiert werden, darum kann sie noch einmal erscheinen.",

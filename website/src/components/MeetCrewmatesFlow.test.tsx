@@ -358,43 +358,44 @@ describe('MeetCrewmatesFlow', () => {
     expect(screen.queryByTestId('meet-crewmates-schedule-error')).toBeNull()
   })
 
-  it('a name the roster could never list (a space) disables Next and says so under the field; nothing is posted', () => {
+  it.each(['Issue Radar', '雷达', '-radar'])('a free-form name (%s) is accepted and sent as typed', async name => {
     renderWithProviders(<MeetCrewmatesFlow open onDone={vi.fn()} onCreated={vi.fn()} />)
     next()
-    fireEvent.change(screen.getByTestId('meet-crewmates-name'), { target: { value: 'Issue Radar' } })
-    expect(screen.getByTestId('meet-crewmates-next')).toBeDisabled()
-    // A validation hint, not an error notice: nothing failed.
-    expect(screen.getByTestId('meet-crewmates-name-hint')).toHaveTextContent('letters, numbers, - and _')
-    expect(screen.queryByTestId('meet-crewmates-name-error')).toBeNull()
-    expect(screen.queryByRole('alert')).toBeNull()
-    expect(screen.getByTestId('meet-crewmates-name')).toHaveAttribute('aria-invalid', 'true')
-    fireEvent.change(screen.getByTestId('meet-crewmates-name'), { target: { value: 'Issue-Radar' } })
+    fireEvent.change(screen.getByTestId('meet-crewmates-name'), { target: { value: name } })
     expect(screen.getByTestId('meet-crewmates-next')).toBeEnabled()
+    expect(screen.getByTestId('meet-crewmates-name')).not.toHaveAttribute('aria-invalid')
     expect(screen.queryByTestId('meet-crewmates-name-hint')).toBeNull()
-    expect(createAgent).not.toHaveBeenCalled()
+    next()
+    fireEvent.click(screen.getByTestId('meet-crewmates-create'))
+    await screen.findByTestId('meet-crewmates-ready')
+    expect(createAgent).toHaveBeenCalledWith(expect.objectContaining({ name }))
   })
 
-  it('a server 400 invalid_agent_name lands under the name field on step 2', async () => {
+  it('a blank name disables Next', () => {
+    renderWithProviders(<MeetCrewmatesFlow open onDone={vi.fn()} onCreated={vi.fn()} />)
+    next()
+    fireEvent.change(screen.getByTestId('meet-crewmates-name'), { target: { value: '   ' } })
+    expect(screen.getByTestId('meet-crewmates-next')).toBeDisabled()
+  })
+
+  it.each(['invalid_member_name', 'credential_shaped_name'])('a server 400 %s lands under the name field on step 2', async code => {
     const { ApiError } = await import('../api/apiError')
-    createAgent.mockRejectedValueOnce(new ApiError(400, 'bad', JSON.stringify({ code: 'invalid_agent_name' })))
+    createAgent.mockRejectedValueOnce(new ApiError(400, 'bad', JSON.stringify({ code })))
     renderWithProviders(<MeetCrewmatesFlow open onDone={vi.fn()} onCreated={vi.fn()} />)
     next()
     next()
     fireEvent.click(screen.getByTestId('meet-crewmates-create'))
-    expect(await screen.findByTestId('meet-crewmates-name-error')).toHaveTextContent('letters, numbers, - and _')
+    expect(await screen.findByTestId('meet-crewmates-name-error')).toHaveTextContent("This name can't be used")
     expect(screen.getByTestId('meet-crewmates-step-2')).toBeInTheDocument()
     expect(createCron).not.toHaveBeenCalled()
   })
 
-  it('isValidCrewmateName mirrors the backend agent-name grammar', () => {
+  it('isValidCrewmateName only refuses a blank name', () => {
     expect(isValidCrewmateName('Radar')).toBe(true)
-    expect(isValidCrewmateName('issue-radar_2')).toBe(true)
-    expect(isValidCrewmateName('R')).toBe(true)
-    expect(isValidCrewmateName('Issue Radar')).toBe(false)
-    expect(isValidCrewmateName('-radar')).toBe(false)
-    expect(isValidCrewmateName('radar-')).toBe(false)
+    expect(isValidCrewmateName('Issue Radar')).toBe(true)
+    expect(isValidCrewmateName('雷达')).toBe(true)
     expect(isValidCrewmateName('')).toBe(false)
-    expect(isValidCrewmateName('雷达')).toBe(false)
+    expect(isValidCrewmateName('  ')).toBe(false)
   })
 
   it('a schedule failure notice offers a way to the Schedule page and leaving completes the flow', async () => {

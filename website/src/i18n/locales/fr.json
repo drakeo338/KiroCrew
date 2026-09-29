@@ -7669,7 +7669,7 @@
       "creating": "Création de {{name}}…",
       "error_name_taken": "Un coéquipier nommé {{name}} existe déjà. Choisis un autre nom, ou ouvre-le depuis la page Crew Members.",
       "chip_taken": "existe déjà",
-      "error_name_shape": "Utilise uniquement des lettres, des chiffres, - et _ ; commence et termine par une lettre ou un chiffre.",
+      "error_name_unusable": "Ce nom ne peut pas être utilisé. Choisis-en un autre.",
       "error_create_failed": "Impossible de créer {{name}}. Vérifie la connexion et réessaie.",
       "error_create_unknown": "{{name}} a peut-être été créé, peut-être pas : le serveur n'a pas répondu. Vérifie la page Crew Members avant de réessayer ; si {{name}} y figure, ajoute son travail depuis la page Planification.",
       "save_failed": "Impossible de marquer cette introduction comme terminée ; elle pourra donc réapparaître une fois.",

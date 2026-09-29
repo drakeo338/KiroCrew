@@ -7669,7 +7669,7 @@
       "creating": "Criando {{name}}…",
       "error_name_taken": "Já existe um colega chamado {{name}}. Escolha outro nome ou abra-o na página Crew Members.",
       "chip_taken": "já existe",
-      "error_name_shape": "Use só letras, números, - e _; comece e termine com letra ou número.",
+      "error_name_unusable": "Este nome não pode ser usado. Escolha outro.",
       "error_create_failed": "Não foi possível criar {{name}}. Verifique a conexão e tente de novo.",
       "error_create_unknown": "{{name}} pode ou não ter sido criado: o servidor não respondeu. Verifique a página Crew Members antes de tentar de novo; se {{name}} estiver lá, adicione o trabalho pela página Agenda.",
       "save_failed": "Não foi possível marcar esta introdução como concluída, então ela pode aparecer mais uma vez.",

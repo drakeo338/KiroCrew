@@ -4947,7 +4947,7 @@
       "creating": "Creating {{name}}…",
       "error_name_taken": "A crewmate named {{name}} already exists. Pick another name, or open it from the Crew Members page.",
       "chip_taken": "already exists",
-      "error_name_shape": "Use letters, numbers, - and _ only; start and end with a letter or number.",
+      "error_name_unusable": "This name can't be used. Pick a different one.",
       "error_create_failed": "{{name}} could not be created. Check the connection and try again.",
       "error_create_unknown": "{{name}} may or may not have been created: the server did not answer. Check the Crew Members page before trying again; if {{name}} is there, add its job from the Schedule page.",
       "save_failed": "This intro could not be marked as done, so it may appear once more.",

@@ -7447,7 +7447,7 @@
       "creating": "{{name}} 만드는 중…",
       "error_name_taken": "{{name}}이라는 이름의 크루메이트가 이미 있습니다. 다른 이름을 고르거나 Crew Members 페이지에서 열어 주세요.",
       "chip_taken": "이미 있음",
-      "error_name_shape": "글자, 숫자, -, _만 쓸 수 있습니다. 처음과 끝은 글자나 숫자여야 합니다.",
+      "error_name_unusable": "이 이름은 사용할 수 없습니다. 다른 이름을 골라 주세요.",
       "error_create_failed": "{{name}}을(를) 만들 수 없었습니다. 연결을 확인하고 다시 시도해 주세요.",
       "error_create_unknown": "{{name}}이(가) 만들어졌는지 알 수 없습니다. 서버가 응답하지 않았습니다. 다시 시도하기 전에 Crew Members 페이지를 확인하세요. {{name}}이(가) 있으면 스케줄 페이지에서 일을 추가하세요.",
       "save_failed": "이 소개를 완료로 표시하지 못해 한 번 더 나타날 수 있습니다.",

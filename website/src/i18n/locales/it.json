@@ -7669,7 +7669,7 @@
       "creating": "Creazione di {{name}}…",
       "error_name_taken": "Esiste già un compagno chiamato {{name}}. Scegli un altro nome o aprilo dalla pagina Crew Members.",
       "chip_taken": "esiste già",
-      "error_name_shape": "Usa solo lettere, numeri, - e _; inizia e finisci con una lettera o un numero.",
+      "error_name_unusable": "Questo nome non può essere usato. Scegline un altro.",
       "error_create_failed": "Impossibile creare {{name}}. Controlla la connessione e riprova.",
       "error_create_unknown": "{{name}} potrebbe essere stato creato oppure no: il server non ha risposto. Controlla la pagina Crew Members prima di riprovare; se {{name}} è lì, aggiungi il suo lavoro dalla pagina Pianificazione.",
       "save_failed": "Non è stato possibile segnare questa introduzione come completata, quindi potrebbe comparire ancora una volta.",

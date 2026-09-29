@@ -7447,7 +7447,7 @@
       "creating": "正在创建 {{name}}…",
       "error_name_taken": "已经有一个叫 {{name}} 的队友了。换一个名字，或者到 Crew Members 页面打开它。",
       "chip_taken": "已存在",
-      "error_name_shape": "只能用字母、数字、- 和 _；开头和结尾必须是字母或数字。",
+      "error_name_unusable": "这个名字不能用，换一个吧。",
       "error_create_failed": "无法创建 {{name}}。检查连接后再试一次。",
       "error_create_unknown": "{{name}} 可能已创建，也可能没有：服务器没有响应。重试前请先查看 Crew Members 页面；如果 {{name}} 已在那里，请到日程页面为它添加工作。",
       "save_failed": "无法把这段介绍标记为已完成，所以它可能再出现一次。",

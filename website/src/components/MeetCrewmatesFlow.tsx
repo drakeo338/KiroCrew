@@ -53,16 +53,16 @@ export const CREWMATES_PAGE_ENTERED_EVENT = 'mc-crewmates-page-entered'
 const TOTAL_STEPS = 4
 const NAME_MAX = 24
 /**
- * The backend's agent-name grammar (`validation._AGENT_NAME_RE`), which `POST
- * /api/agents` now enforces (`invalid_agent_name`). This copy exists only so
- * the hint under the name field can appear as the user types, before the
- * request; the server is the gate. `test/test_meet_crewmates_builtin_pin.py`
- * keeps the two in step.
+ * A crewmate name is free-form: `POST /api/agents` keeps it as the label and
+ * derives the crew's id from it (`members.key_new_crew`). The only rule the
+ * flow previews is "not blank"; the server's `validate_member_name` is the gate,
+ * and its refusal lands under the name field.
  */
-export const AGENT_NAME_RE = /^[a-zA-Z0-9](?:[a-zA-Z0-9_-]{0,62}[a-zA-Z0-9])?$/
 export function isValidCrewmateName(name: string): boolean {
-  return AGENT_NAME_RE.test(name)
+  return name.trim().length > 0
 }
+/** The create route's name refusals, shown under the name field on step 2. */
+const NAME_REFUSAL_CODES = new Set(['invalid_member_name', 'credential_shaped_name'])
 const JOB_MAX = 200
 /** The hour the "Every morning" schedule fires at, in the browser's zone. */
 const MORNING_HOUR = 9
@@ -210,11 +210,6 @@ export default function MeetCrewmatesFlow({
 
   const trimmed = name.trim()
   const nameValid = isValidCrewmateName(trimmed)
-  // A client-side validation hint, shown as plain text under the field once
-  // the user has typed something the server would persist but never list;
-  // never on the empty field (Next is disabled anyway). Not an ErrorNotice:
-  // nothing failed, no request was made.
-  const nameShapeHint = trimmed && !nameValid ? t('components.meetCrewmatesFlow.error_name_shape') : null
   const displayName = trimmed || t('components.meetCrewmatesFlow.example_radar_name')
 
   // Reset on every opening so a re-entry from the Crewmates page starts clean.
@@ -364,10 +359,8 @@ export default function MeetCrewmatesFlow({
         go(2)
         return
       }
-      if (e instanceof ApiError && e.status === 400 && parseErrorCode(e.body) === 'invalid_agent_name') {
-        // The server is the grammar gate; the hint under the field is only its
-        // preview. If they ever disagree, the server's word lands here.
-        setNameError({ message: t('components.meetCrewmatesFlow.error_name_shape'), taken: false, name: trimmed })
+      if (e instanceof ApiError && e.status === 400 && NAME_REFUSAL_CODES.has(parseErrorCode(e.body) ?? '')) {
+        setNameError({ message: t('components.meetCrewmatesFlow.error_name_unusable'), taken: false, name: trimmed })
         go(2)
         return
       }
@@ -549,7 +542,7 @@ export default function MeetCrewmatesFlow({
           {/* Greyed while the name fails the grammar: the avatar is drawn from
               the name, and a fresh colour beside the hint read as "the name
               changed", not "the name is not accepted". */}
-          <div className={nameShapeHint ? 'shrink-0 pt-5 opacity-40 grayscale' : 'shrink-0 pt-5'} data-testid="meet-crewmates-avatar">
+          <div className="shrink-0 pt-5" data-testid="meet-crewmates-avatar">
             <CrewAvatar seed={displayName} size={72} />
           </div>
           <div className="min-w-0 flex-1">
@@ -567,14 +560,14 @@ export default function MeetCrewmatesFlow({
               autoComplete="off"
               spellCheck={false}
               maxLength={NAME_MAX}
-              aria-invalid={nameError || nameShapeHint ? true : undefined}
-              aria-describedby={nameError ? 'meet-crewmates-name-error' : nameShapeHint ? 'meet-crewmates-name-hint' : undefined}
+              aria-invalid={nameError ? true : undefined}
+              aria-describedby={nameError ? 'meet-crewmates-name-error' : undefined}
               className="w-full text-[13px]"
               data-testid="meet-crewmates-name"
               {...ime.bindEnter({ onEnter: () => { if (nameValid && !nameError) go(3) } })}
             />
             {nameError && (
-              /* The server's refusal (409 taken / 400 grammar). No hand-off: the
+              /* The server's refusal (409 taken / 400 unusable name). No hand-off: the
                  name and job typed in this flow are unsaved. A taken name carries
                  the way to the crewmate that owns it -- the same footer button
                  the unknown-create notice has -- instead of naming a page the
@@ -602,14 +595,6 @@ export default function MeetCrewmatesFlow({
                   }
                 />
               </div>
-            )}
-            {!nameError && nameShapeHint && (
-              /* Warning colour, not muted: the hint only appears once the name
-                 fails, and grey read as advice rather than "not accepted yet".
-                 Still not an ErrorNotice -- nothing failed, no request was made. */
-              <p id="meet-crewmates-name-hint" className="mt-2 text-[12px] text-warn-fg" data-testid="meet-crewmates-name-hint">
-                {nameShapeHint}
-              </p>
             )}
             <div className="flex flex-wrap gap-1.5 mt-2.5" role="group" aria-label={t('components.meetCrewmatesFlow.suggested_names')}>
               {EXAMPLES.map(ex => {

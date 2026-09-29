@@ -2981,16 +2981,12 @@ its `mc-crewmates-pending` timing so a workspace that finished first run before
 the chapter shipped is not interrupted on its next load; that workspace gets
 the flow on its first Crewmates page visit instead. This supersedes the
 earlier custom-agent exclusion (`docs/request-for-change/rfc-crewmates-launch.md`,
-"Existing installs") per that RFC's screen 08 amendment of 2026-09-28. `POST /api/agents` now refuses a crew name that fails the shared agent-name
-grammar (`validation._AGENT_NAME_RE`, code `invalid_agent_name`), because `GET
-/api/members` skips such a row and the crew would exist with no roster able to
-show it; the rule lives at that route, for every client of it -- `kirocrew agent
-create` (`cli_commands.py`) still writes a name unchecked, a pre-existing level
-this change leaves as it is. The flow previews the
-same grammar under the name field as the user types (a plain hint, not an
-`ErrorNotice`; `test/test_meet_crewmates_builtin_pin.py` keeps the copy honest)
-and disables Next until it passes; a server `invalid_agent_name` or 409
-`agent_exists` lands as an `ErrorNotice` under the same field.  Notices
+"Existing installs") per that RFC's screen 08 amendment of 2026-09-28. The crewmate name is free-form: `POST /api/agents` keeps it as the crew's
+label and derives an id-shaped key from it (`members.key_new_crew`), so spaces
+and CJK are accepted. The flow disables Next only on a blank name; the server's
+`validate_member_name` is the gate, and a 400 `invalid_member_name` or
+`credential_shaped_name`, or a 409 `agent_exists`, lands as an `ErrorNotice`
+under the name field.  Notices
 follow `errors-use-error-notice`: the agent hand-off is on where nothing can be
 lost (the step-4 schedule notices, the "done" notice on
 steps 1 and 4) and closes the flow the way that step's own exit does, since the
