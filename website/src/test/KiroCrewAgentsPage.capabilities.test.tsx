@@ -104,6 +104,25 @@ describe('capability pane inside the crew dialog', () => {
     expect(screen.getByRole('dialog', { name: 'Edit agent oncall' })).toBe(sheet)
   })
 
+  it('keeps the open create dialog and its typed name when the bare capabilities route becomes mobile', async () => {
+    // Regression: the resize guard used to key only on the editor `sheet`, so
+    // opening the create dialog, typing a draft, and narrowing past the
+    // breakpoint unmounted this page + the dialog and discarded the draft with
+    // no confirm. The guard now also pins the pane route while `createOpen`.
+    const tree = <SidePanelLayout title="Capabilities" tabs={[{ key: 'crews', label: 'Crews', icon: null }]} rememberKey="capabilities">
+      {() => <KiroCrewAgentsPage embedded />}
+    </SidePanelLayout>
+    const result = renderWithProviders(tree, { route: '/capabilities' })
+    fireEvent.click(await screen.findByTestId('new-crew'))
+    const dialog = await screen.findByRole('dialog', { name: 'New crewmate' })
+    const name = within(dialog).getByRole('textbox', { name: 'Name' })
+    fireEvent.change(name, { target: { value: 'my-draft-crew' } })
+    viewport.mobile = true
+    result.rerender(cloneElement(tree))
+    expect(screen.getByRole('dialog', { name: 'New crewmate' })).toBe(dialog)
+    expect(within(dialog).getByRole('textbox', { name: 'Name' })).toHaveValue('my-draft-crew')
+  })
+
   it('gives member identity its own full-width row before narrow header actions', async () => {
     const sheet = await open()
     expect(within(sheet).getByTestId('crew-editor-identity')).toHaveClass('w-full')
