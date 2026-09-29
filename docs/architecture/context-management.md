@@ -399,7 +399,7 @@ transport protocol. MCP Tool Search discovers tool schemas, not skill bodies.
 
 ### Consequence for `kirocrew-worker`
 
-`agent.py` → `_write_worker_spec` derives the worker spec as
+`agent_materialization/worker_agent.py` → `_write_worker_spec` derives the worker spec as
 `default + @kirocrew-work − cron scheduling − unassigned opt-in servers`. The
 mirrored keys are `_WORKER_MIRRORED_SHAPES`: `tools`, `allowedTools`,
 `excludedTools`, `mcpServers`, `model`. **`resources` is not mirrored**, so the
@@ -552,7 +552,7 @@ per-member permission control; both exist today, in the forms above.
 | Sub-agent context scope | `src/kiro_crew/subagent.py` (`_context_groups_of`), `src/kiro_crew/mcp_tools/spawn.py` |
 | Sub-agent prompt assembly, shared vs dedicated | `src/kiro_crew/subagent_manager/run.py` |
 | Scratch directories | `src/kiro_crew/agent_scratch.py` (`allocate_scratch`, `scratch_env`) |
-| The worker agent spec | `src/kiro_crew/agent.py` (`_write_worker_spec`) |
+| The worker agent spec | `src/kiro_crew/agent_materialization/worker_agent.py` (`_write_worker_spec`) |
 | Member identity, rules, briefing, activity, V2 essentials | `src/kiro_crew/members.py`, `src/kiro_crew/context.py` (`_build_member_section`), `src/kiro_crew/member_essential_context.py` |
 | Crew records, routing, binding | `src/kiro_crew/config/loader.py`, `src/kiro_crew/mcp_core.py` |
 | Per-member permissions | `src/kiro_crew/agent_capabilities.py`, `src/kiro_crew/agent_state.py` |

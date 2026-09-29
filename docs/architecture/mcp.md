@@ -1110,7 +1110,7 @@ broken `foo.json` matched `foo` and withheld a good user-level agent's stubs, wh
 kiro-cli reports that file as an error and offers no such mode -- measured the same
 way: a malformed project spec yields `Error: Json supplied at ... is invalid` and
 zero workspace agents. `_project_shadow_of` takes `dispatchable_only` for that, and
-its default is unchanged so the governance refusal in `agent.py`, for which a file
+its default is unchanged so the governance refusal in `agent_materialization/worker_agent.py`, for which a file
 in any state is a claim on the name, keeps refusing.
 
 ## How app agents reach MCP servers

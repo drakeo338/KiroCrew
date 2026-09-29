@@ -4928,7 +4928,7 @@ kiro-agent profile carries:
 ]}}
 ```
 
-Each shape has exactly one reader. `normalize_spec_hooks()` in `agent.py` reads
+Each shape has exactly one reader. `normalize_spec_hooks()` in `agent_materialization/kiro_hooks.py` reads
 the array and returns the internal list of hook documents, and
 `hook_documents_to_object_form()` derives the object form handed to kiro-cli. The
 object form is read only by `_merge_kiro_hooks()`, which owns its validation and
@@ -4992,7 +4992,7 @@ the single merge pass — otherwise a document naming a script under
 `~/.kiro/hooks` is dropped here and rediscovered there, landing on autoimport's
 default event rather than the one the document named.
 
-Merge rules (implemented in `_merge_kiro_hooks()` in `agent.py`):
+Merge rules (implemented in `_merge_kiro_hooks()` in `agent_materialization/kiro_hooks.py`):
 - Bundled hooks from `config/defaults.json` are always present and always first
 - User hooks are appended per event type after bundled hooks
 - Deduped by `(command, matcher)` tuple — same hook won't fire twice

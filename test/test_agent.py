@@ -7212,18 +7212,21 @@ class TestRebuildReconcileRetainsEnabledAppServers:
     app's tools would vanish. It must drop a server only when its app is
     confirmed not enabled (a concurrent deregister).
 
-    Pinned by source inspection: the reconcile is an inline block in
-    ``install_agent`` gated on ``is_kirocrew_json`` (the written path equalling
-    ``bridges._mcp_json_path()``), which the merge-priority harness does not
-    reproduce — so the guarantee is asserted structurally.
+    Pinned by source inspection: the reconcile is an inline block in the
+    rebuild's commit phase (``default_spec_commit.write_default_spec``, which
+    ``install_agent`` calls) gated on ``is_kirocrew_json`` (the written path
+    equalling ``bridges._mcp_json_path()``), which the merge-priority harness does
+    not reproduce — so the guarantee is asserted structurally.
     """
 
     def test_reconcile_drops_by_enabled_state_not_ondisk_absence(self) -> None:
         import inspect
 
         from kiro_crew import agent
+        from kiro_crew.agent_materialization import default_spec_commit
 
-        src = inspect.getsource(agent.install_agent)
+        assert "default_spec_commit.write_default_spec(" in inspect.getsource(agent.install_agent)
+        src = inspect.getsource(default_spec_commit.write_default_spec)
         # The drop must be gated on the app being DISABLED (deregistered), not on
         # mere absence from on_disk — else a clean rebuild with an empty on_disk
         # would delete an enabled app's manifest-derived server.
