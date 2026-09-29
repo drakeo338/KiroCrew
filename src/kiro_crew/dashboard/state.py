@@ -4106,6 +4106,65 @@ class _ChatSlot:
             "current": current,
         }
 
+    def set_todo_task_completed(self, task_id: str, completed: bool) -> bool:
+        """Flip one task's ``completed`` flag by id. True when it changed.
+
+        The dashboard's checklist pill is a COPY of the list the agent keeps
+        inside its native conversation (kiro-cli's ``todo_list`` tool). A person
+        ticking a row here writes only this copy; the next fresh native session
+        picks the copy up through :meth:`todo_recovery_prompt`, so the tick is
+        not lost when the conversation restarts. Unknown ids and an absent list
+        change nothing.
+        """
+        if self._todo is None:
+            return False
+        tasks = self._todo.get("tasks", [])
+        for task in tasks:
+            if isinstance(task, dict) and str(task.get("id")) == str(task_id):
+                if bool(task.get("completed")) == completed:
+                    return False
+                task["completed"] = completed
+                return True
+        return False
+
+    def todo_recovery_prompt(self) -> str:
+        """A prompt block that makes a FRESH native session rebuild this list.
+
+        kiro-cli keeps the ``todo_list`` tool's state inside one native
+        conversation. Kiro Crew replaces that conversation on an agent switch,
+        a failed ``session/load``, a poisoned-conversation discard and ``/clear``
+        -- and keeps the pill's snapshot across all of them. The agent then holds
+        an EMPTY list while the pill still shows the old one, and its next
+        ``complete`` fails ("Task N not found"), which it reports as "I cannot
+        update the checklist". Prepending this block to the first prompt of the
+        fresh session has the agent recreate the list with its own tool, so the
+        two copies agree again and the pill stays live.
+
+        Returns ``""`` when there is no list or the list is empty. The task
+        texts are the agent's own earlier tool output (already redacted and
+        length-capped at parse time); the caller runs the whole prefix through
+        the structural-marker scrub like every other prepend.
+        """
+        payload = self.todo_payload()
+        if not payload or not payload["tasks"]:
+            return ""
+        lines = [
+            "[Task checklist — automatic recovery]",
+            "This conversation was restarted, so your todo_list tool now holds an "
+            "EMPTY list, while the dashboard checklist still shows the list below. "
+            "Before doing anything else, rebuild it with the todo_list tool: one "
+            "`create` call with this exact description and these tasks in this "
+            "order, then one `complete` call for every task marked [x]. Then "
+            "carry on with the request that follows.",
+            f"Description: {payload['description'] or '(none)'}",
+            "Tasks:",
+        ]
+        for idx, task in enumerate(payload["tasks"], start=1):
+            mark = "x" if task.get("completed") else " "
+            lines.append(f"{idx}. [{mark}] {str(task.get('text') or '').strip()}")
+        lines.append("[End task checklist]")
+        return "\n".join(lines)
+
     def set_mcp_report(self, report: dict[str, Any] | None, session_id: str = "") -> bool:
         """Replace this slot's MCP session report. True when it changed.
 

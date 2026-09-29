@@ -10780,7 +10780,9 @@
         "current_task": "Attività corrente",
         "more": "altri…",
         "of": "di",
-        "task_completion": "Completamento dell'attività"
+        "task_completion": "Completamento dell'attività",
+        "aria_mark_done": "Segna attività come completata: {{task}}",
+        "aria_mark_not_done": "Segna attività come non completata: {{task}}"
       },
       "thinkingBlock": {
         "collapse_model_reasoning": "Comprimi il ragionamento del modello",

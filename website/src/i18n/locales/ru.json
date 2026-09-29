@@ -10932,7 +10932,9 @@
         "current_task": "Текущая задача",
         "more": "ещё…",
         "of": "из",
-        "task_completion": "Выполнение задачи"
+        "task_completion": "Выполнение задачи",
+        "aria_mark_done": "Отметить задачу выполненной: {{task}}",
+        "aria_mark_not_done": "Отметить задачу невыполненной: {{task}}"
       },
       "thinkingBlock": {
         "collapse_model_reasoning": "Свернуть рассуждения модели",

@@ -10628,7 +10628,9 @@
         "current_task": "Aktuelle Aufgabe",
         "more": "mehr…",
         "of": "von",
-        "task_completion": "Aufgabenabschluss"
+        "task_completion": "Aufgabenabschluss",
+        "aria_mark_done": "Aufgabe als erledigt markieren: {{task}}",
+        "aria_mark_not_done": "Aufgabe als nicht erledigt markieren: {{task}}"
       },
       "thinkingBlock": {
         "collapse_model_reasoning": "Denkprozess des Modells einklappen",

@@ -10476,7 +10476,9 @@
         "current_task": "현재 작업",
         "more": "개 더…",
         "of": "/",
-        "task_completion": "작업 완료 현황"
+        "task_completion": "작업 완료 현황",
+        "aria_mark_done": "작업을 완료로 표시: {{task}}",
+        "aria_mark_not_done": "작업을 미완료로 표시: {{task}}"
       },
       "thinkingBlock": {
         "collapse_model_reasoning": "모델 추론 접기",

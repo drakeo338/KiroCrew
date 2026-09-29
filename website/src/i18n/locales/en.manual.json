@@ -4306,7 +4306,9 @@
         "all_tasks_complete": "All tasks complete",
         "current_task": "Current task",
         "aria_collapse_task_list": "{{done}} of {{total}} tasks complete. Collapse task list",
-        "aria_expand_task_list": "{{done}} of {{total}} tasks complete. Expand task list"
+        "aria_expand_task_list": "{{done}} of {{total}} tasks complete. Expand task list",
+        "aria_mark_done": "Mark task done: {{task}}",
+        "aria_mark_not_done": "Mark task not done: {{task}}"
       },
       "thinkingBlock": {
         "collapse_model_reasoning": "Collapse model reasoning",

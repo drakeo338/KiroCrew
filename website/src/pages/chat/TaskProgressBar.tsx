@@ -1,6 +1,7 @@
-import { useMemo, useCallback, memo } from 'react'
+import { useMemo, useCallback, useState, memo } from 'react'
 import { ListTodo, ChevronDown, ChevronRight, CheckCircle2, Circle } from 'lucide-react'
 import { useAppSelector } from '../../store'
+import { api } from '../../api/client'
 import { sanitizeLlmOutput } from '../../utils/sanitize'
 import type { TodoList } from '../../types'
 import { useRowDisclosure } from './rowDisclosure'
@@ -20,6 +21,14 @@ const MAX_VISIBLE_ROWS = 12
  * Renders nothing when the agent has never used its todo tool. An empty-but-
  * present list is also hidden (there is nothing to show), but is distinct from
  * absent at the data layer.
+ *
+ * Each row is a toggle. The agent's own list lives inside its native
+ * conversation, which the gateway replaces on an agent switch, a failed resume
+ * or `/clear`; the pill's snapshot survives that, so the agent can no longer
+ * tick the rows it shows. A click writes the dashboard's copy through
+ * `PATCH /api/chat/slots/{slot}/todo`; the gateway echoes the same
+ * `todo_update` delta the tool result does, so the store repaints and the next
+ * fresh agent session rebuilds its list from this copy.
  */
 const TaskProgressBar = memo(function TaskProgressBar({ slot, disclosureKey }: { slot: string | null; disclosureKey?: string }) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
@@ -32,6 +41,16 @@ const TaskProgressBar = memo(function TaskProgressBar({ slot, disclosureKey }: {
 
   const tasks = useMemo(() => todo?.tasks ?? [], [todo])
   const toggle = useCallback(() => setExpanded(v => !v), [setExpanded])
+  // Rows whose PATCH is in flight. The store repaints from the gateway's
+  // `todo_update` echo, so this only guards against a double click.
+  const [pending, setPending] = useState<Set<string>>(() => new Set())
+  const tick = useCallback((id: string, completed: boolean) => {
+    if (!slot) return
+    setPending(p => new Set(p).add(id))
+    api.setTodoTask(slot, id, completed)
+      .catch(() => { /* the store still holds the old row; nothing to roll back */ })
+      .finally(() => setPending(p => { const n = new Set(p); n.delete(id); return n }))
+  }, [slot])
 
   if (!slot || !todo || tasks.length === 0) return null
 
@@ -111,20 +130,34 @@ const TaskProgressBar = memo(function TaskProgressBar({ slot, disclosureKey }: {
                 {sanitizeLlmOutput(todo.description)}
               </li>
             )}
-            {tasks.slice(0, MAX_VISIBLE_ROWS).map((t, i) => (
-              <li
-                key={t.id || i}
-                data-testid="todo-row"
-                className="flex items-start gap-1.5 text-[12px] font-mono"
-              >
-                {t.completed
-                  ? <CheckCircle2 size={12} className="mt-[3px] shrink-0 text-ok" aria-hidden="true" />
-                  : <Circle size={12} className="mt-[3px] shrink-0 text-muted/50" aria-hidden="true" />}
-                <span className={t.completed ? 'text-muted/60 line-through' : 'text-text'}>
-                  {sanitizeLlmOutput(t.text || '')}
-                </span>
-              </li>
-            ))}
+            {tasks.slice(0, MAX_VISIBLE_ROWS).map((t, i) => {
+              const id = t.id || String(i + 1)
+              const text = sanitizeLlmOutput(t.text || '')
+              const busy = pending.has(id)
+              return (
+                <li key={id} data-testid="todo-row" className="text-[12px] font-mono">
+                  <button
+                    type="button"
+                    role="checkbox"
+                    aria-checked={!!t.completed}
+                    aria-label={t.completed
+                      ? i18nT('pages.chat.taskProgressBar.aria_mark_not_done', { task: text })
+                      : i18nT('pages.chat.taskProgressBar.aria_mark_done', { task: text })}
+                    disabled={busy}
+                    onClick={() => tick(id, !t.completed)}
+                    data-testid="todo-row-toggle"
+                    className="flex w-full items-start gap-1.5 text-left bg-transparent border-none p-0 cursor-pointer rounded-sm hover:bg-accent/5 disabled:cursor-default disabled:opacity-60 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-accent"
+                  >
+                    {t.completed
+                      ? <CheckCircle2 size={12} className="mt-[3px] shrink-0 text-ok" aria-hidden="true" />
+                      : <Circle size={12} className="mt-[3px] shrink-0 text-muted/50" aria-hidden="true" />}
+                    <span className={t.completed ? 'text-muted/60 line-through' : 'text-text'}>
+                      {text}
+                    </span>
+                  </button>
+                </li>
+              )
+            })}
             {tasks.length > MAX_VISIBLE_ROWS && (
               <li className="text-[11px] text-muted/60 font-mono pl-[18px]">
                 + {tasks.length - MAX_VISIBLE_ROWS} {i18nT('pages.chat.taskProgressBar.more')}

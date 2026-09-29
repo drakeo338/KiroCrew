@@ -10780,7 +10780,9 @@
         "current_task": "Tarea actual",
         "more": "más…",
         "of": "de",
-        "task_completion": "Progreso de tareas"
+        "task_completion": "Progreso de tareas",
+        "aria_mark_done": "Marcar tarea como hecha: {{task}}",
+        "aria_mark_not_done": "Marcar tarea como no hecha: {{task}}"
       },
       "thinkingBlock": {
         "collapse_model_reasoning": "Contraer el razonamiento del modelo",

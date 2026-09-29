@@ -10780,7 +10780,9 @@
         "current_task": "Tarefa atual",
         "more": "mais…",
         "of": "de",
-        "task_completion": "Conclusão das tarefas"
+        "task_completion": "Conclusão das tarefas",
+        "aria_mark_done": "Marcar tarefa como concluída: {{task}}",
+        "aria_mark_not_done": "Marcar tarefa como não concluída: {{task}}"
       },
       "thinkingBlock": {
         "collapse_model_reasoning": "Recolher o raciocínio do modelo",

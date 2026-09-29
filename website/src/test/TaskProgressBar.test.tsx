@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, act } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { Provider } from 'react-redux'
@@ -6,6 +6,11 @@ import { configureStore } from '@reduxjs/toolkit'
 import TaskProgressBar from '../pages/chat/TaskProgressBar'
 import dashboardReducer, { sseTodoUpdate, sseSlots } from '../store/dashboardSlice'
 import type { ChatSlot, TodoList } from '../types'
+import { api } from '../api/client'
+
+vi.mock('../api/client', () => ({
+  api: { setTodoTask: vi.fn().mockResolvedValue({ ok: true }) },
+}))
 
 const todo = (tasks: Array<[string, boolean]>, description = 'Config workflow'): TodoList => {
   const list = tasks.map(([text, completed], i) => ({ id: String(i + 1), text, completed }))
@@ -146,6 +151,36 @@ describe('TaskProgressBar', () => {
     expect(screen.queryByTestId('todo-pill')).toBeNull()
     act(() => { store.dispatch(sseSlots([slot('slot-1', todo([['a', true], ['b', false]]))])) })
     expect(screen.getByTestId('todo-count').textContent).toBe('1 of 2')
+  })
+})
+
+describe('TaskProgressBar row ticking', () => {
+  beforeEach(() => {
+    vi.mocked(api.setTodoTask).mockClear()
+  })
+
+  it('PATCHes the clicked row with the opposite completed flag', async () => {
+    renderBar([slot('slot-1', todo([['a', true], ['b', false]]))])
+    await userEvent.click(screen.getByTestId('todo-pill'))
+    const rows = screen.getAllByTestId('todo-row-toggle')
+    expect(rows[0]).toHaveAttribute('aria-checked', 'true')
+    expect(rows[1]).toHaveAttribute('aria-checked', 'false')
+    await userEvent.click(rows[1])
+    expect(api.setTodoTask).toHaveBeenCalledWith('slot-1', '2', true)
+    await userEvent.click(rows[0])
+    expect(api.setTodoTask).toHaveBeenCalledWith('slot-1', '1', false)
+  })
+
+  it('repaints from the gateway echo, not from the click', async () => {
+    const { store } = renderBar([slot('slot-1', todo([['a', false]]))])
+    await userEvent.click(screen.getByTestId('todo-pill'))
+    await userEvent.click(screen.getByTestId('todo-row-toggle'))
+    // The optimistic path does not exist: until the todo_update delta lands the
+    // row still reads unchecked, so a failed PATCH needs no rollback.
+    expect(screen.getByTestId('todo-row-toggle')).toHaveAttribute('aria-checked', 'false')
+    act(() => { store.dispatch(sseTodoUpdate({ slot: 'slot-1', todo: todo([['a', true]]) })) })
+    expect(screen.getByTestId('todo-row-toggle')).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByTestId('todo-count').textContent).toBe('1 of 1')
   })
 })
 

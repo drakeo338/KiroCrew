@@ -10628,7 +10628,9 @@
         "current_task": "বর্তমান টাস্ক",
         "more": "আরও…",
         "of": "/",
-        "task_completion": "টাস্ক সম্পন্নতা"
+        "task_completion": "টাস্ক সম্পন্নতা",
+        "aria_mark_done": "কাজ সম্পন্ন হিসেবে চিহ্নিত করুন: {{task}}",
+        "aria_mark_not_done": "কাজ অসম্পন্ন হিসেবে চিহ্নিত করুন: {{task}}"
       },
       "thinkingBlock": {
         "collapse_model_reasoning": "মডেলের রিজনিং সংকুচিত করো",

@@ -10476,7 +10476,9 @@
         "current_task": "当前任务",
         "more": "更多…",
         "of": "/",
-        "task_completion": "任务完成度"
+        "task_completion": "任务完成度",
+        "aria_mark_done": "标记任务已完成：{{task}}",
+        "aria_mark_not_done": "标记任务未完成：{{task}}"
       },
       "thinkingBlock": {
         "collapse_model_reasoning": "收起模型推理",

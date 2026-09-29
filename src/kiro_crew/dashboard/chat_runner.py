@@ -12733,6 +12733,18 @@ async def _run_chat(
         if regenerate_hint:
             full_message = f"[System: {regenerate_hint}]\n\n{full_message}"
 
+        # Checklist resync. The pill's snapshot outlives the native conversation
+        # that produced it (agent switch, failed session/load, poisoned discard,
+        # /clear all cold-start a fresh one), and kiro-cli's todo_list state lives
+        # in that conversation. Same gate as the transcript replay above — a
+        # cold start the provider did not resume itself — because that is
+        # exactly when the agent's own list is empty while the pill is not. A
+        # pure PREPEND, so the trusted-tail scrub below covers it.
+        if not is_slash and _context_is_new and not _provider_has_history:
+            _todo_resync = slot.todo_recovery_prompt()
+            if _todo_resync:
+                full_message = f"{_todo_resync}\n\n{full_message}"
+
         # Enforce every structural boundary once more at provider egress.
         # ContextBuilder owns its trusted tail; everything added here is a pure
         # PREPEND. Scrub that complete dashboard-only prefix in one off-loop

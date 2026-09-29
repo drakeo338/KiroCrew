@@ -10628,7 +10628,9 @@
         "current_task": "मौजूदा टास्क",
         "more": "और…",
         "of": "में से",
-        "task_completion": "कार्य पूर्णता"
+        "task_completion": "कार्य पूर्णता",
+        "aria_mark_done": "कार्य पूर्ण के रूप में चिह्नित करें: {{task}}",
+        "aria_mark_not_done": "कार्य अपूर्ण के रूप में चिह्नित करें: {{task}}"
       },
       "thinkingBlock": {
         "collapse_model_reasoning": "मॉडल की रीज़निंग समेटें",

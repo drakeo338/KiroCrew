@@ -10476,7 +10476,9 @@
         "current_task": "現在のタスク",
         "more": "ほか…",
         "of": "／",
-        "task_completion": "タスクの完了状況"
+        "task_completion": "タスクの完了状況",
+        "aria_mark_done": "タスクを完了にする: {{task}}",
+        "aria_mark_not_done": "タスクを未完了にする: {{task}}"
       },
       "thinkingBlock": {
         "collapse_model_reasoning": "モデルの推論を折りたたむ",

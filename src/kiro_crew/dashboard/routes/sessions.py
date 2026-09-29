@@ -93,6 +93,7 @@ def register(app: web.Application) -> None:
     app.router.add_delete("/api/chat/folders/{id}", chat.api_chat_folder_delete)
     app.router.add_patch("/api/chat/slots/{slot}/folder", chat.api_chat_slot_folder)
     app.router.add_patch("/api/chat/slots/{slot}/pin", chat.api_chat_slot_pin)
+    app.router.add_patch("/api/chat/slots/{slot}/todo", chat.api_chat_slot_todo)
     app.router.add_patch("/api/chat/slots/{slot}/mode", chat.api_chat_slot_mode)
     # Message pins
     app.router.add_get("/api/chat/pins", chat.api_chat_pins_list)
