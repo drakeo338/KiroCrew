@@ -109,6 +109,32 @@ class TestSemanticCRUD:
         assert store.set_semantic("pref.os", "macos", 0.9, "user_explicit") is None
         assert store.get_semantic("pref.os") is not None
 
+    def test_automated_write_does_not_revive_deleted(self, tmp_path: Path, opened) -> None:
+        store = opened(VectorMemoryStore(db_path=tmp_path / "mem.db"))
+        store.init()
+        store.set_semantic("pref.os", "linux", 0.9, "consolidation:chat-1")
+        store.delete_semantic("pref.os", "user_explicit")
+        assert store.set_semantic("pref.os", "macos", 0.9, "consolidation:chat-1") is not None
+        assert store.get_semantic("pref.os") is None
+        row = store.db.execute(
+            "SELECT is_deleted, value_json FROM semantic_memory WHERE key = 'pref.os'"
+        ).fetchone()
+        assert row["is_deleted"] == 1
+        assert row["value_json"] == '"linux"'
+
+    def test_automated_write_does_not_revive_user_deleted_user_fact(
+        self, tmp_path: Path, opened
+    ) -> None:
+        store = opened(VectorMemoryStore(db_path=tmp_path / "mem.db"))
+        store.init()
+        store.set_semantic("pref.os", "linux", 1.0, "user_explicit")
+        store.delete_semantic("pref.os", "user_explicit")
+        assert store.set_semantic("pref.os", "macos", 0.9, "consolidation:chat-1") is not None
+        assert store.get_semantic("pref.os") is None
+        # the user re-adding it still works
+        assert store.set_semantic("pref.os", "windows", 1.0, "user_explicit") is None
+        assert store.get_semantic("pref.os")["value_json"] == '"windows"'
+
 
 class TestKeyValidation:
     def test_valid_keys(self, tmp_path: Path, opened) -> None:

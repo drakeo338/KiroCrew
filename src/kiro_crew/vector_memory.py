@@ -2087,7 +2087,7 @@ class VectorMemoryStore:
                     )
                 )
                 if (
-                    private_policy
+                    (private_policy or (existing and existing["is_deleted"]))
                     and (changed or metadata_changed)
                     and source != "user_explicit"
                     and not verified
