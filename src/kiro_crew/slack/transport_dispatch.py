@@ -81,6 +81,7 @@ from kiro_crew.slack.thread_parent import (
     parent_prompt_text,
     record_thread_parent,
 )
+from kiro_crew.slack.threads import record_anchor as record_thread_anchor
 from kiro_crew.stats import Stats
 
 if TYPE_CHECKING:
@@ -604,6 +605,21 @@ async def handle_message_transport(
         )
         if is_new:
             await sessions.set_channel(session_key, channel)
+            # Record the session Slack just opened as an ANCHORED thread. Slack
+            # already keys one session per thread, so this adds the anchor and
+            # nothing else -- no re-keying, no second session. Off the loop
+            # because it reads and rewrites a metadata line; never raises, and
+            # answers None for a folded DM or a dashboard-linked route because
+            # `session_key` is then not this thread's key. See slack/threads.py.
+            await asyncio.to_thread(
+                record_thread_anchor,
+                conversation_log=conversation_log,
+                session_key=session_key,
+                channel=channel,
+                reply_ts=reply_ts,
+                client=client,
+                agent=_agent,
+            )
         if (
             not _flat_key
             and not linked_session_key

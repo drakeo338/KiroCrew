@@ -4,13 +4,14 @@ One chat session can open, fork, seed, watch, stop and close another one, change
 another one under itself in the sidebar. The tools come from the
 `kirocrew-dashboard` MCP server, so an agent that does not mount that server
 never has them — exactly like any other MCP server. This page is the reference
-for all 21 of its tools, written for the agent that is about to use them.
+for all 22 of its tools, written for the agent that is about to use them.
 
 The server is defined in `src/kiro_crew/mcp_dashboard.py`. Two halves:
 
 - **Session control** — `session_create`, `session_fork`, `session_send`,
-  `session_read_message`, `session_stop`, `session_set_model`, `session_close`,
-  `session_adopt`, `session_release`. These reach another session.
+  `session_broadcast`, `session_status`, `session_read_message`, `session_stop`,
+  `session_set_model`, `session_close`, `session_adopt`, `session_release`,
+  `thread_open`. These reach another session.
 - **Sidebar shape** — `chat_folder_tree`, `chat_folder_create`,
   `chat_folder_move`, `chat_folder_move_session`, `chat_folder_file_self`,
   `chat_tag_list`, `chat_tag_create`, `chat_tag_update`, `chat_tag_assign`,
@@ -376,6 +377,37 @@ To force the change, call `session_stop`, then retry once the target is idle.
 Also refused: `auto` and `Auto (Jev)` (`model_owner_only`), because with the Jev
 preview on a slot on `auto` hands each turn's model to Jev routing, which only the
 owner may arm; and a target bound to a remote crew (`remote_target_unsupported`).
+
+### `thread_open`
+
+Open a THREAD on one message of a conversation: a new session of its own, anchored
+to that message, seeded once with it quoted. Use it to take a side question out of
+a chat without spending the chat's turn on it — the thread is an ordinary session,
+so it has its own composer, tools, approvals, model, memory and place in the
+sidebar, and the parent keeps streaming while you open one.
+
+| Argument | Required | Meaning |
+|---|---|---|
+| `anchor_mid` | yes | The anchored message's id, or `inflight` for the reply being written right now |
+| `title` | no | The thread's title; derived from the anchored message when omitted |
+| `agent` | no | Agent for the thread's own session; the caller's default when omitted |
+
+The anchor is `(surface, conversation, message_id)`. `inflight` exists because a
+streaming reply has no id yet — ids are minted after the turn — so the backend
+resolves the anchor to the user message that STARTED that turn and carries the
+partial reply into the seed. Opening never addresses the parent's running turn: it
+mints a sibling session, so it is neither a steer nor a queue entry and it cannot
+be refused for the parent being busy.
+
+One thread per message: a second open on the same message answers `already_open`
+and names the existing `thread_slot`, which is the thread to show rather than a
+failure. A message whose row is not on disk yet answers `transcript_missing`,
+which means try again rather than never. Closing a thread is a person's action in
+the drawer (**End thread**), not a tool: `thread_open` is the only thread tool on
+this surface.
+
+A channel-bound agent cannot call it (`CHANNEL_AGENT_BLOCKED_TOOLS`), like every
+other tool that reaches a dashboard session.
 
 ## Folders
 

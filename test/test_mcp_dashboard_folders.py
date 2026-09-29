@@ -1896,6 +1896,7 @@ class TestAdvertisedSet:
             "session_read_message",
             "session_adopt",
             "session_release",
+            "thread_open",
         }
 
 

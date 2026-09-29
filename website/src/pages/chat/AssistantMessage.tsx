@@ -367,20 +367,25 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
   const forkItemsInMenu = forkIndex === undefined || !!forkMessageId
   const oldMenuContext = !!(onFork || onPlanFromHere) && (shareEnabled || forkItemsInMenu)
   const hasSpeak = !!onSpeak && text.trim().length > 0
-  // A crewmate's chat offers "Reply in thread" as a ROW button -- the one action
-  // a thread starts from, so it stays visible. The row's cap is two peer
-  // controls (the max-two-buttons rule): Reply takes one seat and More the
-  // other, so on that surface Copy and the raw-view toggle move into More.
+  // "Reply in thread" on a FINISHED reply lives in More, not in the action row.
+  // That row is already over the two-button cap on base, and the rule lets a row in
+  // that position keep the count it has but never grow -- so a new peer button there
+  // is a violation whatever the row already holds. In More it costs the row nothing,
+  // and the action is not hidden: a message that HAS a thread carries the footer
+  // under it, and a reply still streaming keeps its own control, in a row of one.
   const threadRow = !!onReplyInThread
   const menuAvailable = oldMenuContext || hasSpeak || threadRow
   useEffect(() => {
     if (!menuAvailable || isStreaming || !showFooter) setOverflowOpen(false)
   }, [isStreaming, menuAvailable, showFooter])
-  // A reply that previously had no overflow swaps Copy for More. That keeps the
+  // A reply that had no overflow on base swaps Copy for More. That keeps the
   // footer's peer-control count unchanged while making Speak available for short
   // replies too. Existing overflow footers retain their familiar inline Copy.
-  const copyInMenu = (hasSpeak || threadRow) && !oldMenuContext
-  const rawInMenu = threadRow
+  //
+  // A thread action does not move either of these: it is a menu item itself, so
+  // the row keeps exactly the controls the base branch put in it.
+  const copyInMenu = hasSpeak && !oldMenuContext
+  const rawInMenu = false
   const copyMessage = () => {
     const stripped = stripKeepVisibleMarker(steerCleaned)
     copyToClipboard(stripped === steerCleaned ? stripped : stripped.trimEnd()).then((ok) => {
@@ -411,6 +416,14 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="min-w-[210px]">
+          {onReplyInThread && (
+            <DropdownMenuItem className="[@media(hover:none)]:min-h-10" data-testid="reply-in-thread" onSelect={onReplyInThread}>
+              <span className="flex items-center gap-2">
+                <MessageSquare className="lucide-inline shrink-0" />
+                <span>{i18nT('pages.chat.thread.reply_in_thread')}</span>
+              </span>
+            </DropdownMenuItem>
+          )}
           {copyInMenu && (
             <DropdownMenuItem
               data-testid="copy-message-menu-item"
@@ -610,6 +623,27 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
         })()}
       </div>
     )}
+    {/* While the reply is still streaming its footer is withheld (every action
+        there reads a finished reply), but "Reply in thread" is exactly the
+        action a reader wants WHILE they watch it arrive — a long answer going
+        the wrong way is the moment to open a thread, not two minutes later. So
+        it gets its own hover row here, on the same reveal timing as the footer.
+        The streaming row has no `mid` yet (ids are minted post-turn), which is
+        why the callback carries none: the backend anchors the thread to the
+        message that started the turn. */}
+    {isStreaming && onReplyInThread && (
+      <div className={ACTIONS_REVEAL_CLS}>
+        <button
+          className="text-muted hover:text-text p-0.5 rounded transition-colors"
+          data-testid="reply-in-thread-streaming"
+          title={i18nT('pages.chat.thread.reply_in_thread')}
+          aria-label={i18nT('pages.chat.thread.reply_in_thread')}
+          onClick={onReplyInThread}
+        >
+          <MessageSquare size={14} />
+        </button>
+      </div>
+    )}
     {/* Where the pointer cannot hover, the footer uses compact cells: 28px on
         pointer devices and 36×32px on touch, with 14px/16px glyphs. */}
     {!isStreaming && showFooter && (<>
@@ -622,7 +656,6 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
             alignment the mono was actually there for — and it holds the action
             row below at the same x across messages. */}
         {timestamp && <span className="text-muted text-[12px] leading-5 tabular-nums mr-2" title={timestampTitle}>{timestamp}</span>}
-        {onReplyInThread && <button className="text-muted hover:text-text p-0.5 rounded transition-colors" data-testid="reply-in-thread" title={i18nT('pages.chat.thread.reply_in_thread')} aria-label={i18nT('pages.chat.thread.reply_in_thread')} onClick={onReplyInThread}><MessageSquare size={14} /></button>}
         {!copyInMenu && <button className="text-muted hover:text-text p-0.5 rounded transition-colors" title={i18nT('pages.chat.assistantMessage.copy')} aria-label={copyOutcomeLabel(copied, i18nT('pages.chat.assistantMessage.copy'))} onClick={copyMessage}>{copyOutcomeIcon(copied, <Copy size={14} />)}</button>}
         {messageTs && slotKey && <button className="text-muted hover:text-text p-0.5 rounded transition-colors" title={i18nT('pages.chat.assistantMessage.copy_link_to_message')} aria-label={copyOutcomeLabel(linkCopied, i18nT('pages.chat.assistantMessage.copy_link_to_message'))} onClick={() => { copySessionLink(slotKey, slotTitle, messageTs, mode).then(flashCopy(setLinkCopied), () => flashCopy(setLinkCopied)(false)) }}>{copyOutcomeIcon(linkCopied, <Link2 size={14} />)}</button>}
         {messageTs && onTogglePin && <button className="text-muted hover:text-text p-0.5 rounded transition-colors" title={pinned ? i18nT('pages.chat.assistantMessage.unpin_message') : i18nT('pages.chat.assistantMessage.pin_message')} aria-label={pinned ? i18nT('pages.chat.assistantMessage.unpin_message') : i18nT('pages.chat.assistantMessage.pin_message')} aria-pressed={!!pinned} onClick={onTogglePin}>{pinned ? <PinOff size={14} /> : <Pin size={14} />}</button>}

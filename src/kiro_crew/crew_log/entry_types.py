@@ -449,6 +449,31 @@ _PARENT_EDGE_FIELDS: tuple[Field, ...] = (
 OBJECT_PRODUCER_PROBE = "probe"
 OBJECT_PRODUCERS: tuple[str, ...] = (OBJECT_PRODUCER_PROBE,)
 
+#: The anchor a thread hangs off: ``ChannelLink`` plus a message id, which is what
+#: keeps it channel-neutral -- dashboard is ``(dashboard, parent_slot, mid)`` and
+#: Slack is ``(slack, channel_id, thread_ts)``. Shared by ``thread/opened`` and
+#: ``thread/closed`` so the two can never describe the same relation differently.
+_THREAD_ANCHOR_FIELDS: tuple[Field, ...] = (
+    Field(
+        "surface",
+        JSON_STRING,
+        required=True,
+        note="The channel type the anchored conversation lives on, e.g. ``dashboard``.",
+    ),
+    Field(
+        "conversation",
+        JSON_STRING,
+        required=True,
+        note="The anchored conversation: a slot key on the dashboard, a channel id elsewhere.",
+    ),
+    Field(
+        "mid",
+        JSON_STRING,
+        required=True,
+        note="The anchored message's durable id within that conversation.",
+    ),
+)
+
 #: The conductor work board's vocabularies live in :mod:`kiro_crew.work_vocab`, a
 #: pure-data leaf outside this package, so the type declared below, the store and
 #: the tool schemas clamp to ONE set without the boot path loading this module.
@@ -641,6 +666,81 @@ _SESSION_TYPES: tuple[EntryType, ...] = (
                     "The gateway's own end_reason, verbatim. Open: the teardown "
                     "vocabulary belongs to metrics.sessions, which holds more "
                     "reasons than any site passes here today."
+                ),
+            ),
+        ),
+    ),
+    EntryType(
+        "thread/opened",
+        "A thread was opened on one message of this conversation.",
+        (
+            Field(
+                "anchor",
+                JSON_OBJECT,
+                required=True,
+                fields=_THREAD_ANCHOR_FIELDS,
+                note=(
+                    "Which message the thread hangs off. Required: a thread with no "
+                    "anchor is an ordinary session, and the anchor is the only thing "
+                    "this entry says that session/opened does not."
+                ),
+            ),
+            Field(
+                "thread_slot",
+                JSON_STRING,
+                required=True,
+                note="Slot key of the session the thread runs in.",
+            ),
+            Field("title", JSON_STRING, note="The thread's title, as the sidebar shows it."),
+            Field(
+                "opened_by",
+                JSON_STRING,
+                note="``user`` when a person clicked the message, ``agent:<key>`` otherwise.",
+            ),
+            Field(
+                "in_flight",
+                JSON_BOOL,
+                note=(
+                    "True when the reply being written was still streaming as the "
+                    "thread opened, so the anchor is the user message that STARTED "
+                    "that turn rather than the reply. A streaming row has no message "
+                    "id yet -- ids are minted post-turn -- so this is what tells a "
+                    "reader the anchor was resolved rather than chosen."
+                ),
+            ),
+        ),
+        note=(
+            "Recorded on the PARENT conversation's log, where a reader asks 'what hangs "
+            "off this chat'. The thread's own lineage is already recorded on the thread's "
+            "log by ``session/opened.parent``, which the create core writes, so this "
+            "entry deliberately adds the anchor and nothing else -- two statements of the "
+            "same edge would be two things to keep consistent."
+        ),
+    ),
+    EntryType(
+        "thread/closed",
+        "A thread on one message of this conversation was closed.",
+        (
+            Field(
+                "anchor",
+                JSON_OBJECT,
+                required=True,
+                fields=_THREAD_ANCHOR_FIELDS,
+                note="The message the closed thread hung off.",
+            ),
+            Field(
+                "thread_slot",
+                JSON_STRING,
+                required=True,
+                note="Slot key of the session the thread ran in. The session is not deleted.",
+            ),
+            Field(
+                "summary_mid",
+                JSON_STRING,
+                note=(
+                    "Message id of the closing card posted in the parent conversation, "
+                    "which is also the card's back-link target. Absent when no card "
+                    "could be written."
                 ),
             ),
         ),

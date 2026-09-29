@@ -51,7 +51,8 @@ import { FileCard } from '../../components/FileCard'
 import UserMessage from './UserMessage'
 import CrewmateMessage, { type CrewmateIdentity } from './CrewmateMessage'
 import { crewmateBubbleClass, crewmateRunPosition } from '../../components/chat/crewmateBubbles'
-import { formatTs, renderAssistantBubble, replyInThreadFor, threadFooterFor, type MessageRenderer, type MessageRenderContext } from '../../app-sdk/messageRenderers'
+import { formatTs, renderAssistantBubble, replyInThreadFor, threadCloseCardOf, threadFooterFor, type MessageRenderer, type MessageRenderContext } from '../../app-sdk/messageRenderers'
+import ThreadClosedCard from './ThreadClosedCard'
 import { renderUserContent } from './ChatPageMessageContent'
 import { fmtMessageTimeFull } from './messageTime'
 import type { ChatMessage } from '../../types'
@@ -429,6 +430,27 @@ export function createTranscriptRenderers(
       roles: ['assistant'],
       match: isSystemNoticeRow,
       render: (m, ctx) => ctx.row(<SystemNoticeRow key={ctx.key} message={m} disclosureKey={ctx.key} />),
+    },
+    {
+      // Refines `assistant`: the row a thread leaves when it ends. As the plain
+      // bubble it reads as the crewmate saying "[Thread closed]", and the slot it
+      // records as the back-link reaches nothing. As a card it says what happened
+      // and opens the thread it closed.
+      id: 'thread_closed_card',
+      roles: ['assistant'],
+      match: (m) => threadCloseCardOf(m) !== null,
+      render: (m, ctx) => {
+        const card = threadCloseCardOf(m)
+        if (!card) return null
+        const openSlot = ctx.threads?.onOpenSlot
+        return ctx.row(
+          <ThreadClosedCard
+            key={ctx.key}
+            title={card.title}
+            onOpen={openSlot ? () => openSlot(card.threadSlot) : undefined}
+          />,
+        )
+      },
     },
     {
       // Refines `assistant`: an injected workflow completion is a compact

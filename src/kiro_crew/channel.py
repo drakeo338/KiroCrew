@@ -152,6 +152,12 @@ CHANNEL_AGENT_BLOCKED_TOOLS: tuple[str, ...] = (
     # blocked for, one step shallower.
     "session_status",
     "session_create",
+    # A thread IS a created session, so it is contained for exactly the reason
+    # ``session_create`` is, plus one of its own: it is anchored to a message of
+    # the caller's conversation, and a channel-bound session's conversation is a
+    # thread other people are in. The channel surfaces reach threads through their
+    # own adapter, which records the session the channel already keys per thread.
+    "thread_open",
     "session_fork",
     "session_close",
     # The tree verbs, blocked on the containment reason the rest share: a channel

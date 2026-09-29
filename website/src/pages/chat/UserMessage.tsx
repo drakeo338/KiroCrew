@@ -1,6 +1,7 @@
 import { memo, useState, useRef, useEffect, useCallback, type ReactNode } from 'react'
 import { motion } from 'framer-motion'
-import { Pencil, Send, Copy, Check, Link2, MessageSquare, Target, Pin, PinOff, X, Clock } from 'lucide-react'
+import { Pencil, Send, Copy, Check, Link2, MessageSquare, Target, Pin, PinOff, X, Clock, MoreHorizontal } from 'lucide-react'
+import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '../../components/ui/dropdown-menu'
 import { copyToClipboard } from '../../utils/clipboard'
 import { copySessionLink } from '../../utils/shareUrl'
 import { ICON_ACTION_ROW_CLS } from '../../utils/touchActions'
@@ -348,6 +349,48 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
     </div>
   )
 
+  // The row's overflow, mounted only when there is something to put in it. Same
+  // component and same shape as the assistant footer's More, which is the pattern
+  // the rule names rather than a second one invented here.
+  //
+  // Mounted only where a thread is offered, and Pin moves in only then. A surface
+  // with no threads keeps the row the base branch gave it, Pin included: the reason
+  // to collapse the row is the action being added to it, so a chat that gains no
+  // action should not lose a button either.
+  const pinInMenu = !!onReplyInThread && !!messageTs && !!onTogglePin
+  const threadMenu = onReplyInThread ? (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          className="text-muted hover:text-text p-0.5 rounded transition-colors"
+          data-testid="user-message-more-actions"
+          title={i18nT('pages.chat.userMessage.more_actions')}
+          aria-label={i18nT('pages.chat.userMessage.more_actions')}
+        >
+          <MoreHorizontal size={14} />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="min-w-[210px]">
+        {onReplyInThread && (
+          <DropdownMenuItem className="[@media(hover:none)]:min-h-10" data-testid="reply-in-thread" onSelect={onReplyInThread}>
+            <span className="flex items-center gap-2">
+              <MessageSquare className="lucide-inline shrink-0" />
+              <span>{i18nT('pages.chat.thread.reply_in_thread')}</span>
+            </span>
+          </DropdownMenuItem>
+        )}
+        {pinInMenu && (
+          <DropdownMenuItem className="[@media(hover:none)]:min-h-10" data-testid="toggle-pin-message" aria-pressed={!!pinned} onSelect={onTogglePin}>
+            <span className="flex items-center gap-2">
+              {pinned ? <PinOff className="lucide-inline shrink-0" /> : <Pin className="lucide-inline shrink-0" />}
+              <span>{pinned ? i18nT('pages.chat.userMessage.unpin_message') : i18nT('pages.chat.userMessage.pin_message')}</span>
+            </span>
+          </DropdownMenuItem>
+        )}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  ) : null
+
   return (
     // Every box between the content column and the bubble is a fit-content flex
     // item, so a percentage cap only bites once ALL of them carry one.
@@ -468,17 +511,6 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
           is re-shown in place — visible outright, because the card lives in an
           overlay outside this row and its hover can never be `group-hover/msg`. */}
       <div data-message-actions="" className={`flex items-center gap-y-1 mt-1 opacity-0 transition-opacity duration-300 delay-100 group-hover/msg:opacity-100 group-hover/msg:delay-300 group-focus-within/msg:opacity-100 group-focus-within/msg:delay-300 ${ICON_ACTION_ROW_CLS}`}>
-        {onReplyInThread && (
-          <button
-            onClick={onReplyInThread}
-            className="text-muted hover:text-text p-0.5 rounded transition-colors"
-            data-testid="reply-in-thread"
-            title={i18nT('pages.chat.thread.reply_in_thread')}
-            aria-label={i18nT('pages.chat.thread.reply_in_thread')}
-          >
-            <MessageSquare size={14} />
-          </button>
-        )}
         <button
           onClick={() => {
             const pastes = (meta?.pastes as PasteBlock[] | undefined) || []
@@ -514,7 +546,14 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
             {copyOutcomeIcon(linkCopied, <Link2 size={14} />)}
           </button>
         )}
-        {messageTs && onTogglePin && (
+        {/* Pin stays a row button unless a thread action is offered here, in which
+            case both share the overflow below. This row carries four peer controls
+            on the base branch, a count the two-button rule lets it keep but not
+            grow, so a thread action could not be a fifth button. Pin comes along
+            rather than Reply displacing it: one More trigger standing where one
+            button stood keeps the count at four, and a menu holding a single item
+            is a menu that exists for nothing. */}
+        {!pinInMenu && messageTs && onTogglePin && (
           <button
             onClick={onTogglePin}
             className="text-muted hover:text-text p-0.5 rounded transition-colors"
@@ -525,6 +564,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
             {pinned ? <PinOff size={14} /> : <Pin size={14} />}
           </button>
         )}
+        {threadMenu}
         {canEdit && onEditResend && (
           <button
             onClick={startEdit}

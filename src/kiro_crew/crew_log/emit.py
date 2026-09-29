@@ -3134,6 +3134,91 @@ def on_session_released(
     )
 
 
+def on_thread_opened(
+    session_id: str,
+    *,
+    anchor: "dict[str, str]",
+    thread_slot: str,
+    title: str = "",
+    opened_by: str = "",
+    in_flight: bool = False,
+) -> None:
+    """Record ``thread/opened`` on the PARENT conversation's log.
+
+    Written where a reader asks "what hangs off this chat". The thread's own
+    lineage is already on the THREAD's log -- the create core writes
+    ``session/opened.parent`` naming the conversation that made it -- so this
+    entry carries the anchor and nothing else rather than restating that edge.
+
+    ``anchor`` is ``{surface, conversation, mid}``; a call missing any of the
+    three writes nothing, because an anchor is the whole content of this entry.
+    ``title`` is scrubbed here for the reason every other body field is: it
+    arrives from a caller and the log is not rewritable.
+    """
+    if not session_id or not thread_slot:
+        return
+    if not all(isinstance(anchor.get(k), str) and anchor.get(k) for k in _THREAD_ANCHOR_KEYS):
+        return
+    data: dict[str, Any] = {
+        "anchor": {k: anchor[k] for k in _THREAD_ANCHOR_KEYS},
+        "thread_slot": thread_slot,
+    }
+    clean_title = _safe_text(title)
+    if clean_title:
+        data["title"] = clean_title
+    if opened_by:
+        data["opened_by"] = opened_by
+    if in_flight:
+        data["in_flight"] = True
+
+    def _job() -> None:
+        log = _handle(session_id)
+        if log is None:
+            return
+        log.append("thread/opened", data, src=_SRC_GATEWAY)
+
+    _submit(_job, "appending thread/opened", session_id)
+
+
+def on_thread_closed(
+    session_id: str,
+    *,
+    anchor: "dict[str, str]",
+    thread_slot: str,
+    summary_mid: str = "",
+) -> None:
+    """Record ``thread/closed`` on the parent conversation's log.
+
+    Closing a thread does not delete its session: the record says the thread is
+    finished and where its card landed, and the session stays readable.
+    """
+    if not session_id or not thread_slot:
+        return
+    if not all(isinstance(anchor.get(k), str) and anchor.get(k) for k in _THREAD_ANCHOR_KEYS):
+        return
+    data: dict[str, Any] = {
+        "anchor": {k: anchor[k] for k in _THREAD_ANCHOR_KEYS},
+        "thread_slot": thread_slot,
+    }
+    if summary_mid:
+        data["summary_mid"] = summary_mid
+
+    def _job() -> None:
+        log = _handle(session_id)
+        if log is None:
+            return
+        log.append("thread/closed", data, src=_SRC_GATEWAY)
+
+    _submit(_job, "appending thread/closed", session_id)
+
+
+#: The three fields an anchor must carry to be recordable. Spelled here as well as
+#: in the entry type because this emitter REFUSES an incomplete anchor rather than
+#: writing a partial one: the log cannot be rewritten, and an entry whose anchor
+#: names no message records a thread nobody can find.
+_THREAD_ANCHOR_KEYS: tuple[str, ...] = ("surface", "conversation", "mid")
+
+
 def _parent_citation(slot: str, sid: str) -> "dict[str, str]":
     """One ``{slot, sid?}`` citation, or ``{}`` when there is no slot to cite.
 

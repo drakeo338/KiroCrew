@@ -66,6 +66,18 @@ CANONICAL: dict[str, dict] = {
         "previous_parent": {"slot": "chat-3", "sid": "acp-sess-former"},
     },
     "session/released": {"previous_parent": {"slot": "chat-9", "sid": "acp-sess-adopter"}},
+    "thread/opened": {
+        "anchor": {"surface": "dashboard", "conversation": "chat-3", "mid": "m-0123456789abcdef"},
+        "thread_slot": "chat-77-1758524400",
+        "title": "The other eight",
+        "opened_by": "user",
+        "in_flight": True,
+    },
+    "thread/closed": {
+        "anchor": {"surface": "dashboard", "conversation": "chat-3", "mid": "m-0123456789abcdef"},
+        "thread_slot": "chat-77-1758524400",
+        "summary_mid": "m-fedcba9876543210",
+    },
     "turn/started": {"turn": 3, "actor": "user", "depth": 0, "message_seq": 11, "attempt": 2},
     "turn/refused": {"turn": 4, "actor": "cron", "reason": "gateway_closing", "depth": 1},
     "turn/completed": {
@@ -281,7 +293,13 @@ def test_every_type_written_today_is_declared_and_nothing_else_is():
     # The one past those is the crew webview's ``panel/published``, which joins its
     # siblings for the same reason they did: a panel is a record whose history matters,
     # and one overwritable document per crew could hold none of it.
-    assert len(SESSION_ENTRY_TYPES) == 34
+    #
+    # The two past THAT are threads: ``thread/opened`` and ``thread/closed``, written on
+    # the PARENT conversation's log because that is where a reader asks what hangs off a
+    # chat. A thread's own lineage is already in ``session/opened.parent``, so these two
+    # carry the anchor -- the one thing that edge does not say -- and the crew log is the
+    # ledger the design asked for rather than a second store beside it.
+    assert len(SESSION_ENTRY_TYPES) == 36
     # Nine types the vocabulary owns that nothing writes. Declaring one would state
     # a shape no writer produces, and the first emitter to land would have to
     # satisfy a contract written without it. They pass through undeclared instead.

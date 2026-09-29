@@ -286,6 +286,10 @@ ARTIFACT_SLUG_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,78}[a-z0-9])?\Z")
 
 # Valid model name pattern — alphanumerics, hyphens, dots (e.g. "claude-opus-4.8", "deepseek-3.2")
 _MODEL_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$")
+#: A thread anchor's message id, as ``history.THREAD_MID_RE`` spells it. Duplicated
+#: rather than imported: this module is a validation leaf the boot path loads, and
+#: importing ``history`` here would pull the whole store in for one pattern.
+_THREAD_ANCHOR_MID_RE = re.compile(r"^m-[0-9a-f]{16}$")
 
 # Content-bound theme-persona consent hash: sha256 rendered as EXACTLY 64
 # lowercase hex chars. This value flows into hmac.compare_digest at the
@@ -3440,6 +3444,33 @@ SESSION_CREATE_SCHEMA = ToolSchema(
     ],
 )
 
+THREAD_OPEN_SCHEMA = ToolSchema(
+    tool_name="thread_open",
+    fields=[
+        # Capped where ``session_create.title`` is, and for the same reason: the
+        # value is persisted to the anchor index and to the slot's metadata line,
+        # and pushed to every dashboard client.
+        FieldSpec("title", str, required=False, default="", max_len=200),
+        # The anchored message's durable row id. Pattern-fenced HERE as well as at
+        # the endpoint: the value becomes a URL PATH SEGMENT on the way there, so a
+        # shape check that existed only server-side would let an arbitrary string
+        # be quoted into the request line first.
+        FieldSpec(
+            "anchor_mid",
+            str,
+            required=False,
+            default="",
+            max_len=32,
+            pattern=_THREAD_ANCHOR_MID_RE,
+        ),
+        FieldSpec("agent", str, required=False, default="", max_len=MAX_SHORT_STRING),
+        # The extra context added to the thread's ONE seed message. Bounded like a
+        # message body rather than like a title, because that is what it becomes:
+        # the seed is a real user message on the thread's slot.
+        FieldSpec("note", str, required=False, default="", max_len=MAX_LONG_STRING),
+    ],
+)
+
 SESSION_FORK_SCHEMA = ToolSchema(
     tool_name="session_fork",
     fields=[
@@ -3786,6 +3817,7 @@ def _cu_coord_field(name: str, *, required: bool = False) -> FieldSpec:
 # its args passed through raw.
 MCP_DASHBOARD_SCHEMAS: dict[str, ToolSchema] = {
     "session_create": SESSION_CREATE_SCHEMA,
+    "thread_open": THREAD_OPEN_SCHEMA,
     "session_fork": SESSION_FORK_SCHEMA,
     "session_stop": SESSION_STOP_SCHEMA,
     "session_set_model": SESSION_SET_MODEL_SCHEMA,

@@ -75,7 +75,7 @@ import { forgetUnobservedMemberThreads } from '../api/membersQuery'
 import { observedPaneSlots } from '../api/slotMessagesQuery'
 import { MEMBERS_ROSTER_QUERY_KEY, MEMBER_PROJECTIONS_QUERY_PREFIX } from '../api/membersQuery'
 import { memberProjectionStore } from '../state/memberProjectionStore'
-import { threadLiveStore, type ThreadReplyFrame } from '../state/threadLiveStore'
+import { threadLiveStore, type ThreadAnchorFrame } from '../state/threadLiveStore'
 import { threadQueryKey, threadsQueryKey } from '../api/threads'
 import { sanitizeLlmOutput } from '../utils/sanitize'
 import { deriveToolCallTitle } from '../utils/toolCallTitle'
@@ -1359,12 +1359,11 @@ export function useWebSocket() {
         // file body when the switch never moved. A document that never read the
         // switch has nothing to compare and nothing raw to drop.
         void healRedactionSwitchAfterReconnect(queryClient).catch(() => { /* a heal that cannot run leaves the document as it was */ })
-        // Same one-shot problem for a reply thread on a crewmate chat message:
-        // the terminal `chat.thread_reply` frame of a reply that finished while
-        // the socket was down was never delivered, so the live store would show
-        // a partial reply forever and the stored row would never be refetched.
-        // Drop every live row (streamed text only; the stored replies are the
-        // truth) and refetch every observed thread and footer count.
+        // Same one-shot problem for a thread's anchor: a `chat.thread_anchor`
+        // frame announcing a thread opened or closed while the socket was down
+        // was never delivered, so the live store would name a stale slot or miss
+        // a close forever. Drop every row (the anchor index is the truth) and
+        // refetch every observed anchor and footer count.
         threadLiveStore.reset()
         queryClient.invalidateQueries({ queryKey: ['chat-thread'] })
         queryClient.invalidateQueries({ queryKey: ['chat-threads'] })
@@ -2534,18 +2533,17 @@ export function useWebSocket() {
           case 'chat.side_result':
             dispatch(sseSideResult(data as { slot: string; run_id: string; role: 'user' | 'assistant'; content: string; ts?: number; final?: boolean; is_error?: boolean; steer?: boolean }))
             break
-          case 'chat.thread_reply': {
-            // A reply landing in a thread on a crewmate chat message. Streamed
-            // deltas go to the live store the thread panel reads; a stored row
-            // (the user's reply, or the crewmate's terminal frame) refreshes the
-            // thread and the per-slot footer counts through React Query.
-            const frame = data as ThreadReplyFrame
+          case 'chat.thread_anchor': {
+            // A thread was opened or closed on one of this slot's messages. The
+            // thread's own MESSAGES arrive on the thread slot's ordinary frames
+            // (a thread is a real session now), so this frame announces the
+            // anchor only: the live store gets the slot it resolved to, and the
+            // anchor index plus the footer counts are refetched.
+            const frame = data as ThreadAnchorFrame
             if (typeof frame.slot !== 'string' || typeof frame.mid !== 'string') break
             threadLiveStore.apply(frame)
-            if (frame.role === 'user' || frame.final) {
-              queryClient.invalidateQueries({ queryKey: threadQueryKey(frame.slot, frame.mid) })
-              queryClient.invalidateQueries({ queryKey: threadsQueryKey(frame.slot) })
-            }
+            queryClient.invalidateQueries({ queryKey: threadQueryKey(frame.slot, frame.mid) })
+            queryClient.invalidateQueries({ queryKey: threadsQueryKey(frame.slot) })
             break
           }
           case 'chat.side_queue': {
