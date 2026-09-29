@@ -1003,6 +1003,11 @@ Details worth knowing:
     young to have carried such a start may still act. An own-queue dispatching
     reading does not lift this hold: it is read off the starts the sweep read, and
     the slow same-queue start that would refute it can sit in a run nobody read.
+    On a tick that has an orphan to judge, the sweep first reads the jobs of every
+    unread run that could hold such a start, up to 200 more reads (all or nothing:
+    a partial read cannot lift the hold, so a larger set is not read at all), so the
+    hold is reached only past that top-up bound; a tick with no orphan spends none
+    of those reads, which is why they are not folded into the per-tick bound.
     The unread runs are retained
     with their creation times and re-judged on age at each cancel, not counted once:
     the cancel phase re-reads the listing once and then judges several cancels
