@@ -38,7 +38,7 @@ import { i18nT } from '../../i18n/t'
 import { ThemeDroppedRulesNotice } from './ThemeDroppedRulesNotice'
 import ErrorNotice from '../../components/ErrorNotice'
 import { useImeGuard } from '../../hooks/useImeGuard'
-import { useReduceTransparency } from '../../hooks/useReduceTransparency'
+import { useLiquidGlass } from '../../hooks/useLiquidGlass'
 /**
  * Lightweight inline spinner (no modal / progress bar — matches the "status,
  * not ceremony" preference). Colors come from theme CSS vars via Tailwind
@@ -103,7 +103,7 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
   const isInstalledTheme = allThemes.find((t) => t.value === colorTheme)?.installed === true
   const { uiMode, setUIMode } = useUIMode()
   const editor = useThemeEditor()
-  const { reduceTransparency, setReduceTransparency } = useReduceTransparency()
+  const { liquidGlass, setLiquidGlass } = useLiquidGlass()
   const termFont = useTerminalFont()
   // Probed families become picker rows previewed in their own family, so the
   // Powerline sample answers "will my prompt theme render" before the choice is
@@ -805,17 +805,17 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
                 and navigating to the chat would discard it. */}
             <ErrorNotice message={installError} variant="inline" />
           </div>
-          {/* The Liquid Glass panes (message box, chips, the Settings search
-              capsule) are translucent over whatever scrolls under them. This
-              switch renders them as solid cards instead -- the same rules the
-              app applies under the OS's own reduced-transparency setting, so
-              the two paths cannot look different. Browser-local, like the font
-              family: it is about how this screen renders. */}
+          {/* Liquid Glass is opt-in. Off (the default) the message box, the
+              chips and the Settings search capsule are solid cards -- the same
+              rules the app applies under the OS's own reduced-transparency
+              setting, so the two paths cannot look different. On, they render
+              as frosted glass over whatever scrolls under them. Browser-local,
+              like the font family: it is about how this screen renders. */}
           <SettingsToggle
-            label={i18nT('pages.settings.displayPanel.reduce_transparency')}
-            description={i18nT('pages.settings.displayPanel.reduce_transparency_desc')}
-            checked={reduceTransparency}
-            onChange={setReduceTransparency}
+            label={i18nT('pages.settings.displayPanel.liquid_glass')}
+            description={i18nT('pages.settings.displayPanel.liquid_glass_desc')}
+            checked={liquidGlass}
+            onChange={setLiquidGlass}
           />
         </SettingsCard>
       </SettingsSection>

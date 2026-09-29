@@ -1864,6 +1864,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "display.liquid-glass",
+    "label": "Liquid glass",
+    "labelKey": "pages.settings.displayPanel.liquid_glass",
+    "description": "Render the message box, the suggestion chips and the Settings search as frosted glass over the content that scrolls under them. Off, they are solid cards, the same look the app uses when your system asks for less transparency.",
+    "tab": "display",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "theme"
+    }
+  },
+  {
     "id": "display.mode",
     "label": "Mode",
     "labelKey": "pages.settings.displayPanel.mode",
@@ -1885,18 +1897,6 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1,
     "params": {
       "sub": "sidebar"
-    }
-  },
-  {
-    "id": "display.reduce-glass-transparency",
-    "label": "Reduce glass transparency",
-    "labelKey": "pages.settings.displayPanel.reduce_transparency",
-    "description": "Show the frosted glass panes (the message box, the suggestion chips, the Settings search) as solid cards. Same look the app uses when your system asks for less transparency.",
-    "tab": "display",
-    "type": "toggle",
-    "occurrence": 1,
-    "params": {
-      "sub": "theme"
     }
   },
   {

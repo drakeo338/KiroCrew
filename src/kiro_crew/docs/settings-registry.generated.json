@@ -1089,6 +1089,13 @@
       "description": "Language for the dashboard interface."
     },
     {
+      "id": "display.liquid-glass",
+      "label": "Liquid glass",
+      "tab": "display",
+      "route": "/settings/display/theme?highlight=display.liquid-glass",
+      "description": "Render the message box, the suggestion chips and the Settings search as frosted glass over the content that scrolls under them. Off, they are solid cards, the same look the app uses when your system asks for less transparency."
+    },
+    {
       "id": "display.mode",
       "label": "Mode",
       "tab": "display",
@@ -1101,13 +1108,6 @@
       "tab": "display",
       "route": "/settings/display/sidebar?highlight=display.palette",
       "description": "Choose a color palette for your sidebar sessions."
-    },
-    {
-      "id": "display.reduce-glass-transparency",
-      "label": "Reduce glass transparency",
-      "tab": "display",
-      "route": "/settings/display/theme?highlight=display.reduce-glass-transparency",
-      "description": "Show the frosted glass panes (the message box, the suggestion chips, the Settings search) as solid cards. Same look the app uses when your system asks for less transparency."
     },
     {
       "id": "display.theme",
