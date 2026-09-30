@@ -940,7 +940,7 @@ def load_claimed_row_groups(slot_key: str) -> list[set[str]]:
     except OSError:
         # No spool, or an unreadable one: there is nothing to recover FROM, and a
         # restore must not fail over a best-effort pass.
-        logger.debug("mcp-apps claim reconcile skipped, spool unreadable", exc_info=True)
+        logger.debug("mcp-apps claim reconcile skipped, spool unreadable")
         return []
 
     for entry in entries:
